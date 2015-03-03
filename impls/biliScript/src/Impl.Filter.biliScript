@@ -1,0 +1,505 @@
+// {{Depend : API}} //
+// {{Depend : Utilities}} //
+
+/* Impl for IChannelSplitNode
+ */
+
+( function() {
+  var originPoint = $.createPoint( 0, 0 );
+
+  var evaluate = function( input, output, linkage, cache ) {
+    var signal = input( "signal" );
+    if ( !signal ) {
+      Debug.throw( "@ Impl.Filter.biliScript, IChannelSplitNode.evaluate: No input signal." );
+      return;
+    }
+
+    signal.lock();
+    if ( linkage.alpha ) {
+      if ( !output.alpha || output.alpha.width !== signal.width || output.alpha.height !== signal.height ) {
+        if ( output.alpha ) {
+          output.alpha.dispose();
+        }
+        output.alpha = Bitmap.createBitmapData( signal.width, signal.height, true, 0 );
+      }
+      output.alpha.lock();
+      output.alpha.copyChannel( signal, signal.rect, originPoint, 8, 8 );
+      output.alpha.unlock();
+    }
+
+    if ( linkage.red ) {
+      if ( !output.red || output.red.width !== signal.width || output.red.height !== signal.height ) {
+        if ( output.red ) {
+          output.red.dispose();
+        }
+        output.red = Bitmap.createBitmapData( signal.width, signal.height, true, 0 );
+      }
+      output.red.lock();
+      output.red.copyChannel( signal, signal.rect, originPoint, 1, 1 );
+      output.red.unlock();
+    }
+
+    if ( linkage.green ) {
+      if ( !output.green || output.green.width !== signal.width || output.green.height !== signal.height ) {
+        if ( output.green ) {
+          output.green.dispose();
+        }
+        output.green = Bitmap.createBitmapData( signal.width, signal.height, true, 0 );
+      }
+      output.green.lock();
+      output.green.copyChannel( signal, signal.rect, originPoint, 2, 2 );
+      output.green.unlock();
+    }
+
+    if ( linkage.blue ) {
+      if ( !output.blue || output.blue.width !== signal.width || output.blue.height !== signal.height ) {
+        if ( output.blue ) {
+          output.blue.dispose();
+        }
+        output.blue = Bitmap.createBitmapData( signal.width, signal.height, true, 0 );
+      }
+      output.blue.lock();
+      output.blue.copyChannel( signal, signal.rect, originPoint, 4, 4 );
+      output.blue.unlock();
+    }
+    signal.unlock();
+  };
+
+  Node.implement( "ChannelSplit", {
+    input : [
+      { name : "signal", type : "Signal" }
+    ],
+    output : [
+      { name : "alpha", type : "Signal" },
+      { name : "red", type : "Signal" },
+      { name : "green", type : "Signal" },
+      { name : "blue", type : "Signal" }
+    ],
+    evaluate : evaluate
+  } );
+})();
+
+/* Impl for IChannelMergeNode
+ */
+
+( function() {
+  var originPoint = $.createPoint( 0, 0 );
+
+  var evaluate = function( input, output, linkage, cache ) {
+    var base = input( "base" );
+    var alpha = input( "alpha" );
+    var red = input( "red" );
+    var green = input( "green" );
+    var blue = input( "blue" );
+
+    if ( !base && !alpha && !red && !green && !blue ) {
+      Debug.throw( "@ Impl.Filter.biliScript, IChannelMergeNode.evaluate: No input signal." );
+      return;
+    }
+
+    var width = null;
+    var height = null;
+
+    if ( base ) {
+      width = base.width;
+      height = base.height;
+    }
+
+    if ( alpha ) {
+      if ( width ) {
+        if ( width !== alpha.width || height !== alpha.height ) {
+          Debug.throw( "@ Impl.Filter.biliScript, IChannelMergeNode.evaluate: Input signal dimensions mismatch." );
+          return;
+        }
+      }
+      else {
+        width = alpha.width;
+        height = alpha.height;
+      }
+    }
+
+    if ( red ) {
+      if ( width ) {
+        if ( width !== red.width || height !== red.height ) {
+          Debug.throw( "@ Impl.Filter.biliScript, IChannelMergeNode.evaluate: Input signal dimensions mismatch." );
+          return;
+        }
+      }
+      else {
+        width = red.width;
+        height = red.height;
+      }
+    }
+
+    if ( green ) {
+      if ( width ) {
+        if ( width !== green.width || height !== green.height ) {
+          Debug.throw( "@ Impl.Filter.biliScript, IChannelMergeNode.evaluate: Input signal dimensions mismatch." );
+          return;
+        }
+      }
+      else {
+        width = green.width;
+        height = green.height;
+      }
+    }
+
+    if ( blue ) {
+      if ( width ) {
+        if ( width !== blue.width || height !== blue.height ) {
+          Debug.throw( "@ Impl.Filter.biliScript, IChannelMergeNode.evaluate: Input signal dimensions mismatch." );
+          return;
+        }
+      }
+      else {
+        width = blue.width;
+        height = blue.height;
+      }
+    }
+
+    if ( !output.output || output.output.width !== width || output.output.height !== height ) {
+      if ( output.output ) {
+        output.output.dispose();
+      }
+      output.output = Bitmap.createBitmapData( width, height, true, 0 );
+    }
+
+    var surface = output.output;
+    surface.lock();
+
+    if ( base ) {
+      base.lock();
+      surface.copyPixels( base, base.rect, originPoint, null, null, false );
+      base.unlock();
+    }
+
+    if ( alpha ) {
+      alpha.lock();
+      surface.copyChannel( alpha, alpha.rect, originPoint, 8, 8 );
+      alpha.unlock();
+    }
+
+    if ( red ) {
+      red.lock();
+      surface.copyChannel( red, red.rect, originPoint, 1, 1 );
+      red.unlock();
+    }
+
+    if ( green ) {
+      green.lock();
+      surface.copyChannel( green, green.rect, originPoint, 2, 2 );
+      green.unlock();
+    }
+
+    if ( blue ) {
+      blue.lock();
+      surface.copyChannel( blue, blue.rect, originPoint, 4, 4 );
+      blue.unlock();
+    }
+
+    surface.unlock();
+  };
+
+  Node.implement( "ChannelMerge", {
+    input : [
+      { name : "base", type : "Signal" },
+      { name : "alpha", type : "Signal" },
+      { name : "red", type : "Signal" },
+      { name : "green", type : "Signal" },
+      { name : "blue", type : "Signal" }
+    ],
+    output : [
+      { name : "signal", type : "Signal" }
+    ],
+    evaluate : evaluate
+  } );
+})();
+
+/* Impl for IMergeNode
+ */
+
+( function() {
+  var originPoint = $.createPoint( 0, 0 );
+
+  var evaluate = function( input, output, linkage, cache ) {
+    var signalA = input( "signalA" );
+    var signalB = input( "signalB" );
+    if ( !signalA || !signalB ) {
+      Debug.throw( "@ Impl.Filter.biliScript, IMergeNode.evaluate: No input signal." );
+      return;
+    }
+
+    if ( signalA.width !== signalB.width || signalA.height !== signalB.height ) {
+      Debug.throw( "@ Impl.Filter.biliScript, IMergeNode.evaluate: Input signal dimensions mismatch." );
+      return;
+    }
+
+    var blend = input( "blend" );
+    var alpha = input( "alpha" );
+
+    if ( !output.output || output.output.width !== signalA.width || output.output.height !== signalA.height ) {
+      if ( output.output ) {
+        output.output.dispose();
+      }
+      output.output = Bitmap.createBitmapData( signalA.width, signalA.height, true, 0 );
+    }
+
+    var surface = output.output;
+    surface.lock();
+
+    if ( blend === "none" ) {
+      signalB.lock();
+      surface.copyPixels( signalB, signalB.rect, originPoint, null, null, false );
+      signalB.unlock();
+    }
+    else if ( blend === "normal" && alpha === 1 ) {
+      signalA.lock();
+      signalB.lock();
+      surface.copyPixels( signalA, signalA.rect, originPoint, null, null, false );
+      surface.copyPixels( signalB, signalB.rect, originPoint, null, null, true );
+      signalA.unlock();
+      signalB.unlock();
+    }
+    else {
+      signalA.lock();
+      signalB.lock();
+      surface.copyPixels( signalA, signalA.rect, originPoint, null, null, false );
+      if ( alpha === 1 ) {
+        surface.draw( signalB, null, null, blend, null, false );
+      }
+      else {
+        surface.draw( signalB, null, $.createColorTransform( 1, 1, 1, alpha, 0, 0, 0, 0 ), blend, null, false );
+      }
+      signalA.unlock();
+      signalB.unlock();
+    }
+
+    surface.unlock();
+  };
+
+  Node.implement( "Merge", {
+    input : [
+      { name : "signalA", type : "Signal" },
+      { name : "signalB", type : "Signal" },
+      { name : "blend", type : "String", value : "none" },
+      { name : "alpha", type : "Number", value : 1 }
+    ],
+    output : [ { name : "output", type : "Signal" } ],
+    evaluate : evaluate
+  } );
+})();
+
+/* Impl for IThresholdNode
+ */
+
+( function() {
+  var originPoint = $.createPoint( 0, 0 );
+
+  var evaluate = function( input, output, linkage, cache ) {
+    var signal = input( "signal" );
+    if ( !signal ) {
+      Debug.throw( "@ Impl.Filter.biliScript, IThresholdNode.evaluate: No input signal." );
+      return;
+    }
+
+    var threshold = Color.toRgb( input( "threshold" ) );
+    var inverse = input( "inverse" );
+    var separate = input( "separate" );
+
+    if ( !output.output || output.output.width !== signal.width || output.output.height !== signal.height ) {
+      if ( output.output ) {
+        output.output.dispose();
+      }
+      output.output = Bitmap.createBitmapData( signal.width, signal.height, true, 0 );
+    }
+    if ( !cache.auxSurface || cache.auxSurface.width !== signal.width || cache.auxSurface.height !== signal.height ) {
+      if ( cache.auxSurface ) {
+        cache.auxSurface.dispose();
+      }
+      cache.auxSurface = Bitmap.createBitmapData( signal.width, signal.height, true, 0 );
+    }
+
+    var surface = output.output;
+    surface.lock();
+    signal.lock();
+    var inOriginal = true;
+    var inAux = false;
+    var hwC = Color.toHardware( threshold );
+
+    if ( separate ) {
+      auxSurface.lock();
+      if ( inverse || threshold[ 1 ] > 0 ) {
+        auxSurface.threshold( signal, signal.rect, originPoint, "<", hwC, 0, 0xFF000000, true );
+        surface.copyChannel( auxSurface, auxSurface.rect, originPoint, 8, 8 );
+      }
+      else {
+        surface.copyChannel( signal, signal.rect, originPoint, 8, 8 );
+      }
+      if ( inverse || threshold[ 2 ] > 0 ) {
+        auxSurface.threshold( signal, signal.rect, originPoint, "<", hwC, 0, 0x00FF0000, true );
+        surface.copyChannel( auxSurface, auxSurface.rect, originPoint, 1, 1 );
+      }
+      else {
+        surface.copyChannel( signal, signal.rect, originPoint, 1, 1 );
+      }
+      if ( inverse || threshold[ 3 ] > 0 ) {
+        auxSurface.threshold( signal, signal.rect, originPoint, "<", hwC, 0, 0x0000FF00, true );
+        surface.copyChannel( auxSurface, auxSurface.rect, originPoint, 2, 2 );
+      }
+      else {
+        surface.copyChannel( signal, signal.rect, originPoint, 2, 2 );
+      }
+      if ( inverse || threshold[ 4 ] > 0 ) {
+        auxSurface.threshold( signal, signal.rect, originPoint, "<", hwC, 0, 0x000000FF, true );
+        surface.copyChannel( auxSurface, auxSurface.rect, originPoint, 4, 4 );
+      }
+      else {
+        surface.copyChannel( signal, signal.rect, originPoint, 4, 4 );
+      }
+      auxSurface.unlock();
+    }
+    else {
+      if ( inverse || threshold[ 1 ] > 0 ) {
+        surface.threshold( signal, signal.rect, originPoint, inverse ? "<" : ">", hwC, 0, 0xFF000000, true );
+        inOriginal = false;
+      }
+      if ( inverse || threshold[ 2 ] > 0 ) {
+        if ( inOriginal ) {
+          surface.threshold( signal, signal.rect, originPoint, inverse ? "<" : ">", hwC, 0, 0x00FF0000, true );
+          inOriginal = false;
+        }
+        else {
+          surface.threshold( surface, surface.rect, originPoint, inverse ? "<" : ">", hwC, 0, 0x00FF0000, true );
+        }
+      }
+      if ( inverse || threshold[ 3 ] > 0 ) {
+        if ( inOriginal ) {
+          surface.threshold( signal, signal.rect, originPoint, inverse ? "<" : ">", hwC, 0, 0x0000FF00, true );
+          inOriginal = false;
+        }
+        else {
+          surface.threshold( surface, surface.rect, originPoint, inverse ? "<" : ">", hwC, 0, 0x0000FF00, true );
+        }
+      }
+      if ( inverse || threshold[ 4 ] > 0 ) {
+        if ( inOriginal ) {
+          surface.threshold( signal, signal.rect, originPoint, inverse ? "<" : ">", hwC, 0, 0x000000FF, true );
+          inOriginal = false;
+        }
+        else {
+          surface.threshold( surface, surface.rect, originPoint, inverse ? "<" : ">", hwC, 0, 0x000000FF, true );
+        }
+      }
+      if ( inOriginal ) {
+        surface.copyPixels( signal, signal.rect, originPoint, null, null, false );
+      }
+    }
+
+    signal.unlock();
+    surface.unlock();
+  };
+
+  Node.implement( "Threshold", {
+    input : [
+      { name : "signal", type : "Signal" },
+      { name : "threshold", type : "Color", value : [ "rgb", 0, 0, 0, 0 ] },
+      { name : "inverse", type : "Boolean", value : false },
+      { name : "separate", type : "Boolean", value : false }
+    ],
+    output : [ { name : "output", type : "Signal" } ],
+    evaluate : evaluate
+  } );
+})();
+
+/* Impl for IBoxBlurNode
+ */
+
+( function() {
+  var blurFilter = $.createBlurFilter( 0, 0, 1 );
+  var originPoint = $.createPoint( 0, 0 );
+
+  var evaluate = function( input, output, linkage, cache ) {
+    var signal = input( "signal" );
+    if ( !signal ) {
+      Debug.throw( "@ Impl.Filter.biliScript, IBoxBlurNode.evaluate: No input signal." );
+      return;
+    }
+
+    var radiusX = input( "radiusX" );
+    var radiusY = input( "radiusY" );
+    var iterations = input( "iterations" );
+
+    if ( !output.output || output.output.width !== signal.width || output.output.height !== signal.height ) {
+      if ( output.output ) {
+        output.output.dispose();
+      }
+      output.output = Bitmap.createBitmapData( signal.width, signal.height, true, 0 );
+    }
+    if ( !cache.auxSurface || cache.auxSurface.width !== signal.width || cache.auxSurface.height !== signal.height ) {
+      if ( cache.auxSurface ) {
+        cache.auxSurface.dispose();
+      }
+      cache.auxSurface = Bitmap.createBitmapData( signal.width, signal.height, true, 0 );
+    }
+
+    var surface = output.output;
+    var auxSurface = cache.auxSurface;
+    surface.lock();
+    auxSurface.lock();
+    signal.lock();
+    var inOriginal = true;
+    var inAux = false;
+
+    if ( radiusX > 0 || radiusY > 0 ) {
+      blurFilter.blurX = radiusX * Node.globalScale;
+      blurFilter.blurY = radiusY * Node.globalScale;
+
+      while( iterations > 0 ) {
+        blurFilter.quality = Math.min( 15, iterations );
+        if ( inAux ) {
+          surface.applyFilter( auxSurface, auxSurface.rect, originPoint, blurFilter );
+          inAux = false;
+        }
+        else {
+          if ( inOriginal ) {
+            surface.applyFilter( signal, signal.rect, originPoint, blurFilter );
+            inOriginal = false;
+            inAux = false;
+          }
+          else {
+            auxSurface.applyFilter( surface, surface.rect, originPoint, blurFilter );
+            inAux = true;
+          }
+        }
+        iterations = iterations - 15;
+      }
+    }
+    
+    if ( inAux ) {
+      surface.copyPixels( auxSurface, auxSurface.rect, originPoint, null, null, false );
+    }
+    else {
+      if ( inOriginal ) {
+        surface.copyPixels( signal, signal.rect, originPoint, null, null, false );
+      }
+    }
+    signal.unlock();
+    auxSurface.unlock();
+    surface.unlock();
+    return;
+  };
+
+  Node.implement( "BoxBlur", {
+    input : [
+      { name : "signal", type : "Signal" },
+      { name : "radiusX", type : "Number", value : 0 },
+      { name : "radiusY", type : "Number", value : 0 },
+      { name : "iterations", type : "Number", value : 1 },
+      { name : "blend", type : "String", value : "none" },
+      { name : "alpha", type : "Number", value : 1 },
+      { name : "threshold", type : "Color", value : [ "rgb", 0, 0, 0, 0 ] }
+    ],
+    output : [ { name : "output", type : "Signal" } ],
+    evaluate : evaluate
+  } );
+})();

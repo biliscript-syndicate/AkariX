@@ -1,0 +1,715 @@
+// {{Depend : API}} //
+// {{Depend : Utilities}} //
+// {{Depend : Spline}} //
+
+/* Impl for IKeyframesNode
+ */
+
+( function() {
+  var interpolateColor = function( a, b, t ) {
+    if ( !a ) {
+      var a = [ "rgb", 0, 0, 0, 0 ];
+    }
+    if ( !b ) {
+      var b = [ "rgb", 0, 0, 0, 0 ];
+    }
+
+    if ( a[ 0 ] === b[ 0 ] ) {
+      return [
+        a[ 0 ],
+        a[ 1 ] + ( b[ 1 ] - a[ 1 ] ) * t,
+        a[ 2 ] + ( b[ 2 ] - a[ 2 ] ) * t,
+        a[ 3 ] + ( b[ 3 ] - a[ 3 ] ) * t,
+        a[ 4 ] + ( b[ 4 ] - a[ 4 ] ) * t
+      ];
+    }
+    else {
+      var aRgb = Color.toRgb( a );
+      var bRgb = Color.toRgb( b );
+      return [
+        "rgb",
+        aRgb[ 1 ] + ( bRgb[ 1 ] - aRgb[ 1 ] ) * t,
+        aRgb[ 2 ] + ( bRgb[ 2 ] - aRgb[ 2 ] ) * t,
+        aRgb[ 3 ] + ( bRgb[ 3 ] - aRgb[ 3 ] ) * t,
+        aRgb[ 4 ] + ( bRgb[ 4 ] - aRgb[ 4 ] ) * t
+      ];
+    }
+  };
+
+  var distanceColor = function( a, b ) {
+    if ( !a ) {
+      var a = [ "rgb", 0, 0, 0, 0 ];
+    }
+    if ( !b ) {
+      var b = [ "rgb", 0, 0, 0, 0 ];
+    }
+
+    if ( a[ 0 ] === b[ 0 ] ) {
+      return Vector.length( Vector.subtract( a.slice( 1 ), b.slice( 1 ) ) );
+    }
+    else {
+      var aRgb = Color.toRgb( a );
+      var bRgb = Color.toRgb( b );
+      return Vector.length( Vector.subtract( aRgb.slice( 1 ), bRgb.slice( 1 ) ) );
+    }
+  };
+
+  var interpolateVector = function( a, b, t ) {
+    if ( !a ) {
+      var a = [];
+    }
+    if ( !b ) {
+      var b = [];
+    }
+
+    var i = 0;
+    var maxLength = a.length > b.length ? a.length : b.length;
+    var ret = [];
+
+    for ( i = 0; i < maxLength; i ++ ) {
+      ret[ i ] = ( a[ i ] || 0 ) + ( ( b[ i ] || 0 ) - ( a[ i ] || 0 ) ) * t;
+    }
+
+    return ret;
+  };
+
+  var distanceVector = function( a, b ) {
+    return Vector.length( Vector.subtract( a || [], b || [] ) );
+  };
+
+  var tmpM3D = $.createMatrix3D([]);
+  var tmpM3D2 = $.createMatrix3D([]);
+
+  var interpolateMatrix = function( a, b, t ) {
+    if ( !a && !b ) {
+      return null;
+    }
+    if ( !a ) {
+      var a = [ 1, 0, 0, 0, 1, 0 ];
+    }
+    if ( !b ) {
+      var a = [ 1, 0, 0, 0, 1, 0 ];
+    }
+
+    tmpM3D.rawData[ 0 ] = a[ 0 ];
+    tmpM3D.rawData[ 1 ] = a[ 1 ];
+    tmpM3D.rawData[ 3 ] = a[ 2 ];
+    tmpM3D.rawData[ 4 ] = a[ 3 ];
+    tmpM3D.rawData[ 5 ] = a[ 4 ];
+    tmpM3D.rawData[ 6 ] = a[ 5 ];
+    tmpM3D2.rawData[ 0 ] = a[ 0 ];
+    tmpM3D2.rawData[ 1 ] = a[ 1 ];
+    tmpM3D2.rawData[ 3 ] = a[ 2 ];
+    tmpM3D2.rawData[ 4 ] = a[ 3 ];
+    tmpM3D2.rawData[ 5 ] = a[ 4 ];
+    tmpM3D2.rawData[ 6 ] = a[ 5 ];
+
+    var tm = tmpM3D.constructor.interpolate( tmpM3D, tmpM3D2, t );
+    return [
+      tm.rawData[ 0 ], tm.rawData[ 1 ], tm.rawData[ 3 ],
+      tm.rawData[ 4 ], tm.rawData[ 5 ], tm.rawData[ 6 ]
+    ];
+  };
+
+  var distanceMatrix = function( a, b ) {
+    // Matrices shouldn't be interpolated linearly
+    // but for distance a fast approximate can be used
+    return Vector.length( Vector.subtract( a || [], b || [] ) );
+  };
+
+  var interpolateBrush = function( a, b, t ) {
+    if ( !a ) {
+      var a = { type : "none" };
+    }
+    if ( !b ) {
+      var b = { type : "none" };
+    }
+
+    var width = ( a.width || 0 ) + ( ( b.width || 0 ) - ( a.width || 0 ) ) * t;
+    var caps = t < 0.5 ? ( a.caps || b.caps ) : ( b.caps || a.caps );
+    var joints = t < 0.5 ? ( a.joints || b.joints ) : ( b.joints || a.joints );
+    var miterLimit = ( a.miterLimit || 3 ) + ( ( b.miterLimit || 3 ) - ( a.miterLimit || 3 ) ) * t;
+    var type = a.type;
+    if ( a.type === "none" ) {
+      type = b.type;
+    }
+    else if ( b.type === "none" ) {
+      type = a.type;
+    }
+    else {
+      type = t < 0.5 ? a.type : b.type;
+    }
+
+    var texture = t < 0.5 ? ( a.texture || b.texture ) : ( b.texture || a.texture );
+    var colors = null;
+    var i = 0;
+    var colorsA = a.colors || [[ "rgb", 0, 0, 0, 0 ]];
+    var colorsB = b.colors || [[ "rgb", 0, 0, 0, 0 ]];
+    colors = [];
+    if ( colorsA.length === colorsB.length ) {
+      for( i = 0; i < colorsA.length; i ++ ) {
+        colors.push( interpolateColor( colorsA[ i ], colorsB[ i ], t ) );
+      }
+    }
+    else {
+      var currentLength = Math.ceil( colorsA.length + ( colorsB.length - colorsA.length ) * t );
+      for ( i = 0; i < currentLength; i ++ ) {
+        if ( colorsA[ i ] && colorsB[ i ] ) {
+          colors.push( interpolateColor( colorsA[ i ], colorsB[ i ], t ) );
+        }
+        else {
+          if ( i === currentLength - 1 ) {
+            var nomT = ( currentLength - 1 - colorsA.length ) / ( colorsB.length - colorsA.length );
+            var nomT2 = ( currentLength - colorsA.length ) / ( colorsB.length - colorsA.length );
+            colors.push( interpolateColor( colors[ i - 1 ], colorsA[ i ] || colorsB[ i ], ( t - nomT ) / ( nomT2 - nomT ) ) );
+          }
+          else {
+            colors.push( colorsA[ i ] || colorsB[ i ] );
+          }
+        }
+      }
+    }
+
+    var ratios = null;
+    var i = 0;
+    var ratiosA = a.ratios || [ 0 ];
+    var ratiosB = b.ratios || [ 0 ];
+    ratios = [];
+    if ( ratiosA.length === ratiosB.length ) {
+      for( i = 0; i < ratiosA.length; i ++ ) {
+        ratios.push( ratiosA[ i ] + ( ratiosB[ i ] - ratiosA[ i ] ) * t );
+      }
+    }
+    else {
+      var currentLength = Math.ceil( ratiosA.length + ( ratiosB.length - ratiosA.length ) * t );
+      for ( i = 0; i < currentLength; i ++ ) {
+        if ( ratiosA[ i ] && ratiosB[ i ] ) {
+          ratios.push( ratiosA[ i ] + ( ratiosB[ i ] - ratiosA[ i ] ) * t );
+        }
+        else {
+          if ( i === currentLength - 1 ) {
+            var nomT = ( currentLength - 1 - ratiosA.length ) / ( ratiosB.length - ratiosA.length );
+            var nomT2 = ( currentLength - ratiosA.length ) / ( ratiosB.length - ratiosA.length );
+            ratios.push( 1 + ( ( ratiosA[ i ] || ratiosB[ i ] ) - 1 ) * ( t - nomT ) / ( nomT2 - nomT ) );
+          }
+          else {
+            ratios.push( ratiosA[ i ] || ratiosB[ i ] );
+          }
+        }
+      }
+    }
+
+    var spreadMethod = t < 0.5 ? ( a.spreadMethod || b.spreadMethod ) : ( b.spreadMethod || a.spreadMethod );
+    var matrix = interpolateMatrix( a.matrix, b.matrix, t );
+    var polar = t < 0.5 ? a.polar : b.polar;
+    var focalPointRatio = ( a.focalPointRatio || 0 ) + ( ( b.focalPointRatio || 0 ) - ( a.focalPointRatio || 0 ) ) * t;
+
+    return {
+      width : width,
+      caps : caps,
+      joints : joints,
+      miterLimit : miterLimit,
+      type : type,
+      texture : texture,
+      colors : colors,
+      ratios : ratios,
+      spreadMethod : spreadMethod,
+      matrix : matrix,
+      polar : polar,
+      focalPointRatio : focalPointRatio
+    };
+  };
+
+  var distanceBrush = function( a, b ) {
+    var sum = 0;
+    // Really arbitrary weights here... I would say better not do spacial interpolation on brushes.
+    sum += 4 * Math.abs( ( a.width || 0 ) - ( b.width || 0 ) );
+    sum += 0.5 * Math.abs( ( a.miterLimit || 0 ) - ( b.miterLimit || 0 ) );
+    sum += distanceMatrix( a.matrix, b.matrix );
+    if ( a.caps !== b.caps ) {
+      sum += 10;
+    }
+    if ( a.joints !== b.joints ) {
+      sum += 10;
+    }
+    if ( a.colors && b.colors ) {
+      if ( a.colors.length !== b.colors.length ) {
+        sum += 8 * Math.abs( a.colors.length - b.colors.length );
+      }
+      else {
+        var i = 0;
+        for ( i = 0; i < a.colors.length; i ++ ) {
+          sum += distanceColor( a.colors[ i ], b.colors[ i ] );
+        }
+      }
+    }
+    else {
+      sum *= 2;
+    }
+    if ( a.type !== b.type ) {
+      sum *= 10;
+    }
+    if ( a.texture !== b.texture ) {
+      sum *= 2;
+    }
+    if ( a.polar !== b.polar ) {
+      sum *= 2;
+    }
+    if ( a.spreadMethod !== b.spreadMethod ) {
+      sum *= 2;
+    }
+
+    return sum;
+  };
+
+  var interpolateTransform = function( a, b, t ) {
+    if ( !a ) {
+      var a = {};
+    }
+    if ( !b ) {
+      var b = {};
+    }
+
+    var position = interpolateVector( a.position, b.position, t );
+    var anchor = interpolateVector( a.anchor, b.anchor, t );
+    var rotation = interpolateVector( a.rotation, b.rotation, t );
+    var scale = interpolateVector( a.scale, b.scale, t );
+
+    return {
+      position : position,
+      anchor : anchor,
+      rotation : rotation,
+      scale : scale
+    };
+  };
+
+  var distanceTransform = function( a, b ) {
+    if ( !a ) {
+      var a = {};
+    }
+    if ( !b ) {
+      var b = {};
+    }
+
+    var sum = distanceVector( a.position, b.position );
+    sum += distanceVector( a.anchor, b.anchor );
+    sum += distanceVector( a.rotation, b.rotation );
+    sum += distanceVector( a.scale, b.scale );
+
+    return sum;
+  };
+
+  var growthSpline = function( s, t ) {
+    var center = [];
+    var i = 0;
+    var j = 0;
+    var s = 0;
+
+    for ( i = 0; i < s.length; i ++ ) {
+      center = Vector.add.apply( Vector, s[ i + 0 ].concat( center ) );
+      s += 1;
+    }
+
+    center = Vector.scale( center, 1 / s );
+    var ret = [];
+    for ( i = 0; i < s.length; i ++ ) {
+      ret.push([]);
+      for ( j = 0; j < s[ i + 0 ].length; j ++ ) {
+        ret[ i + 0 ].push( Vector.add( center, Vector.scale( Vector.subtract( s[ i + 0 ][ j + 0 ], center ), t ) ) );
+      }
+    }
+
+    return ret;
+  };
+
+  var bezierElevate = function( cps, target ) {
+    var current = cps;
+    var i = 0;
+    while ( current.length < target ) {
+      var result = [ current[ 0 ] ];
+      for ( i = 1; i < current.length; i ++ ) {
+        result.push( interpolateVector( current[ i - 1 ], current[ i + 0 ], i / current.length ) );
+      }
+      result.push( current[ current.length - 1 ] );
+
+      current = result;
+    }
+
+    return current;
+  };
+
+  var splineSplit = function( s, target ) {
+    var current = s;
+    var i = 0;
+    var j = 0;
+    var t = 0;
+    var lm = 0;
+    var lmi = 0;
+    var tv = null;
+
+    while ( current.length < target ) {
+      var result = [];
+      lm = 0;
+      lmi = 0;
+      for ( i = 0; i < current.length; i ++ ) {
+        t = 0;
+        tv = current[ i + 0 ][ 0 ];
+        for ( j = 1; j < current[ i + 0 ].length; j ++ ) {
+          t += Vector.length( Vector.subtract( current[ i + 0 ][ j + 0 ], tv ) );
+          tv = current[ i + 0 ][ j + 0 ];
+        }
+        if ( t > lm ) {
+          lm = t;
+          lmi = i;
+        }
+      }
+
+      var lSeg = [];
+      var rSeg = [];
+      ( Bezier( current[ lmi + 0 ] ) ).split( lSeg, rSeg );
+
+      for ( i = 0; i < lmi; i ++ ) {
+        result.push( current[ i + 0 ] );
+      }
+      result.push( lSeg );
+      result.push( rSeg );
+      for ( i = lmi + 1; i < current.length; i ++ ) {
+        result.push( current[ i + 0 ] );
+      }
+
+      current = result;
+    }
+
+    return current;
+  };
+
+  var interpolateSpline = function( a, b, t ) {
+    // If one of the splines is null and not the other: Perform a growth animation from center
+    if ( !a || a.length === 0 ) {
+      if ( !b || b.length === 0 ) {
+        return [];
+      }
+      else {
+        return growthSpline( b, t );
+      }
+    }
+    else {
+      if ( !b || b.length === 0 ) {
+        return growthSpline( a, 1 - t );
+      }
+    }
+
+    var i = 0;
+    var j = 0;
+    if ( a.length < b.length ) {
+      a = splineSplit( a, b.length );
+    }
+    else if ( a.length > b.length ) {
+      b = splineSplit( b, a.length );
+    }
+
+    for ( i = 0; i < a.length; i ++ ) {
+      if ( a[ i + 0 ].length < b[ i + 0 ].length ) {
+        a[ i + 0 ] = bezierElevate( a[ i + 0 ], b[ i + 0 ].length );
+      }
+      else if ( a[ i + 0 ].length > b[ i + 0 ].length ) {
+        b[ i + 0 ] = bezierElevate( b[ i + 0 ], a[ i + 0 ].length );
+      }
+    }
+
+    var ret = [];
+    for ( i = 0; i < a.length; i ++ ) {
+      ret.push([]);
+      for ( j = 0; j < a[ i + 0 ].length; j ++ ) {
+        ret[ i + 0 ].push( interpolateVector( a[ i + 0 ][ j + 0 ], b[ i + 0 ][ j + 0 ], t ) );
+      }
+    }
+
+    return ret;
+  };
+
+  var distanceSpline = function( a, b ) {
+    if ( !a && !b ) {
+      return 0;
+    }
+
+    if ( !a ) {
+      var a = [ [ b[ 0 ][ 0 ] ] ];
+    }
+    if ( !b ) {
+      var b = [ [ a[ 0 ][ 0 ] ] ];
+    }
+
+    var i = 0;
+    var j = 0;
+    if ( a.length < b.length ) {
+      a = splineSplit( a, b.length );
+    }
+    else if ( a.length > b.length ) {
+      b = splineSplit( b, a.length );
+    }
+
+    for ( i = 0; i < a.length; i ++ ) {
+      if ( a[ i + 0 ].length < b[ i + 0 ].length ) {
+        a[ i + 0 ] = bezierElevate( a[ i + 0 ], b[ i + 0 ].length );
+      }
+      else if ( a[ i + 0 ].length > b[ i + 0 ].length ) {
+        b[ i + 0 ] = bezierElevate( b[ i + 0 ], a[ i + 0 ].length );
+      }
+    }
+
+    var ret = 0;
+    for ( i = 0; i < a.length; i ++ ) {
+      for ( j = 0; j < a[ i + 0 ].length; j ++ ) {
+        ret += distanceVector( a[ i + 0 ][ j + 0 ], b[ i + 0 ][ j + 0 ] );
+      }
+    }
+
+    return ret;
+  };
+
+  var interpolatePrimitive = function( a, b, t ) {
+    if ( !a || !b || a.type === "Signal" || b.type === "Signal" ) {
+      return t < 0.5 ? ( a || b ) : ( b || a );
+    }
+
+    var splineA = null;
+    var splineB = null;
+
+    if ( a.type === "Spline" ) {
+      splineA = a.vertices ? a.vertices : null;
+    }
+    else {
+      if ( a.vertices && a.vertices.length > 0 ) {
+        splineA = [[ a.vertices[ 0 ] ]];
+        var i = 0;
+        for ( i = 1; i < a.vertices; i ++ ) {
+          splineA.push([ a.vertices[ i - 1 ], a.vertices[ i ] ]);
+        }
+      }
+    }
+
+    if ( b.type === "Spline" ) {
+      splineB = b.vertices ? b.vertices : null;
+    }
+    else {
+      if ( b.vertices && b.vertices.length > 0 ) {
+        splineB = [[ b.vertices[ 0 ] ]];
+        var i = 0;
+        for ( i = 1; i < b.vertices; i ++ ) {
+          splineA.push([ b.vertices[ i - 1 ], b.vertices[ i ] ]);
+        }
+      }
+    }
+
+    var vertices = interpolateSpline( splineA, splineB, t );
+    var blend = t < 0.5 ? ( a.blend || b.blend ) : ( b.blend || a.blend );
+    var fill = interpolateBrush( a.fill, b.fill, t );
+    var stroke = interpolateBrush( a.stroke, b.stroke, t );
+    var transform = interpolateTransform( a.transform, b.transform, t );
+
+    return {
+      type : "Spline",
+      blend : blend,
+      vertices : vertices,
+      fill : fill,
+      stroke : stroke,
+      transform : transform
+    };
+  };
+
+  var distancePrimitive = function( a, b ) {
+    if ( !a || !b || a.type === "Signal" || b.type === "Signal" ) {
+      return 0;
+    }
+
+    var sum = 0;
+    if ( a.type === "Spline" && b.type === "Spline" ) {
+      sum += distanceSpline( a.vertices, b.vertices );
+    }
+    sum += distanceTransform( a.transform, b.transform );
+    sum += distanceBrush( a.fill, b.fill );
+    sum += distanceBrush( a.stroke, b.stroke );
+
+    if ( a.type !== b.type ) {
+      sum *= 4;
+    }
+    if ( a.blend !== b.blend ) {
+      sum *= 2;
+    }
+
+    return sum;
+  };
+
+  var evaluate = function( input, output, linkage, cache ) {
+    var type = input( "as" );
+    var cached = input( "cacheSpline" );
+    var keyframes = null;
+    if ( cached ) {
+      keyframes = cache.keyframes || input( "keyframes" );
+      cache.keyframes = keyframes;
+    }
+    else {
+      keyframes = input( "keyframes" );
+    }
+
+    var interpolationFunc = null;
+    var distanceFunc = null;
+
+    switch( type ) {
+      case "Color":
+        interpolationFunc = interpolateColor;
+        distanceFunc = distanceColor;
+        break;
+      case "Brush":
+        interpolationFunc = interpolateBrush;
+        distanceFunc = distanceBrush;
+        break;
+      case "Vector":
+        interpolationFunc = interpolateVector;
+        distanceFunc = distanceVector;
+        break;
+      case "Transform":
+        interpolationFunc = interpolateTransform;
+        distanceFunc = distanceTransform;
+        break;
+      case "Spline":
+        interpolationFunc = interpolateSpline;
+        distanceFunc = distanceSpline;
+        break;
+      case "Primitive":
+        interpolationFunc = interpolatePrimitive;
+        distanceFunc = distancePrimitive;
+        break;
+    }
+
+    var time = input( "time" );
+    var pLine = null;
+    if ( cached ) {
+      if ( cache.lMin && cache.lMax ) {
+        if ( time >= cache.lMin && time < cache.lMax ) {
+          pLine = cache.pLine;
+        }
+      }
+    }
+
+    if ( !pLine ) {
+      var i = 0;
+      var j = 0;
+      var lMin = 0;
+      var lMax = 0;
+      var currentSegment = null;
+
+      // Have to do sanity checks on our own since Compositor handles only the top level type of objects,
+      // and curves that are not a function of time are allowed as Splines.
+      for ( i = 0; i < keyframes.length; i ++ ) {
+        if ( keyframes[ i + 0 ].length > 0 ) {
+          lMin = keyframes[ i + 0 ][ 0 ][ 0 ];
+          // now lMax is still the last point of the last segment.
+          // This rule enforces that segments don't overlap.
+          if ( lMin < lMax ) {
+            Debug.throw( "@ Impl.Animation.biliScript, IKeyframesNode.evaluate: Spline is not a function of time." );
+          }
+          if ( lMax <= time && time < lMin ) {
+            currentSegment = [ keyframes[ i - 1 ][ keyframes[ i - 1 ].length - 1 ], keyframes[ i + 0 ][ 0 ] ];
+            break;
+          }
+
+          lMax = keyframes[ i + 0 ][ keyframes[ i + 0 ].length - 1 ][ 0 ];
+          for ( j = 0; j < keyframes[ i + 0 ].length; j ++ ) {
+            if ( keyframes[ i + 0 ][ j + 0 ] < lMin || keyframes[ i + 0 ][ j + 0 ] > lMax ) {
+              Debug.throw( "@ Impl.Animation.biliScript, IKeyframesNode.evaluate: Spline is not a function of time." );
+            }
+          }
+
+          if ( lMin <= time && time < lMax ) {
+            currentSegment = keyframes[ i + 0 ];
+            break;
+          }
+        }
+      }
+
+      if ( !currentSegment ) {
+        if ( time < keyframes[ 0 ][ 0 ][ 0 ] ) {
+          pLine = [ keyframes[ 0 ][ 0 ] ];
+          lMin = (0).constructor.MIN_VALUE;
+          lMax = pLine[ 0 ][ 0 ];
+        }
+        else if ( time >= lMax ) {
+          pLine = [ keyframes[ keyframes.length - 1 ][ keyframes[ keyframes.length - 1 ].length - 1 ] ];
+          lMin = pLine[ 0 ][ 0 ];
+          lMax = (0).constructor.MAX_VALUE;
+        }
+      }
+      else {
+        // Limit precision in time domain to frame rate. Anything lower is probably nonsense
+        var frameRate = $.hasOwnProperty( "frameRate" ) ? ( $.frameRate || 24 ) : 24;
+        var bez = Bezier( currentSegment );
+        bez.interpolation[ 1 ] = interpolationFunc;
+        bez.distance[ 1 ] = distanceFunc;
+        pLine = bez.toPolyline();
+      }
+
+      if ( cached ) {
+        cache.pLine = pLine;
+        cache.lMin = lMin;
+        cache.lMax = lMax;
+      }
+    }
+
+    if ( pLine.length === 1 ) {
+      output.value = pLine[ 0 ][ 1 ];
+    }
+    else {
+      // binary search for the corresponding segment
+      var start = 0;
+      var end = pLine.length - 2;
+      var loopFlag = start < end;
+
+      do {
+        i = Math.floor( ( start + end ) / 2 );
+
+        if ( pLine[ i ][ 0 ] > time ) {
+          end = i;
+        }
+        else if ( pLine[ i + 1 ][ 0 ] < time ) {
+          if ( i === end - 1 ) {
+            i ++;
+            loopFlag = false;
+          }
+          else {
+            start = i;
+          }
+        }
+        else {
+          loopFlag = false;
+        }
+
+      } while ( loopFlag );
+
+      var p1 = pLine[ i ];
+      var p2 = pLine[ i + 1 ];
+      var t = ( p2[ 0 ] === p1[ 0 ] ) ? 1 : ( time - p1[ 0 ] ) / ( p2[ 0 ] - p1[ 0 ] );
+
+      if ( interpolationFunc ) {
+        output.value = axAs( type, interpolationFunc( p1[ 1 ], p2[ 1 ], t ) );
+      }
+      else {
+        output.value = p1[ 1 ] + ( p2[ 1 ] - p1[ 1 ] ) * t;
+      }
+    }
+  };
+
+  Node.implement( "Keyframes", {
+    input : [
+      { name : "keyframes", type : "Spline", value : [] },
+      { name : "as", type : "String", value : "Number" },
+      { name : "time", type : "Number", value : 0 },
+      { name : "cacheSpline", type : "Boolean", value : false }
+    ],
+    output : [
+      { name : "value", type : "Any" }
+    ],
+    evaluate : evaluate
+  } );
+})();

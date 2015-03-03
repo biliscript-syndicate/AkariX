@@ -1,0 +1,312 @@
+// {{Depend : API}} //
+// {{Depend : Utilities}} //
+
+var Compositor = function() {
+  var instance = null;
+
+  // Implementation of IPresentationNode, IOutputNode integrated
+  var root = null;
+  if ( $.hasOwnProperty( "root" ) && $.root ) {
+    root = $.root;
+  }
+  else {
+    root = $.createCanvas({ lifeTime : 810114514 });
+    root.transform.matrix3D = null;
+  }
+
+  var rootBitmap = Bitmap.createBitmap({ lifeTime : 810114514 });
+  var rootBitmapData = null;
+  ScriptManager.popEl( rootBitmap );
+  root.addChild( rootBitmap );
+  rootBitmap.transform.matrix3D = null;
+
+  var dbgOutput = $.createComment( "", { lifeTime : 334334334, fontsize : 9 } );
+  dbgOutput.bold = false;
+  ScriptManager.popEl( dbgOutput );
+  root.addChild( dbgOutput );
+  dbgOutput.transform.matrix3D = null;
+  dbgOutput.visible = false;
+
+  var lastUpdate = -1;
+  var lastWidth, lastHeight;
+  var fps = 0;
+  var isOptimal = false;
+  var frameTime = 0;
+
+  var frameFunction = function()
+  {
+    lastUpdate = getMasterTime();
+    var baseFrameTime = getTimer();
+    if ( $.width != lastWidth || $.height != lastHeight )
+    {
+      lastWidth = $.width;
+      lastHeight = $.height;
+
+      instance.evaluateAt( instance.entryPoint );
+      frameTime = getTimer() - baseFrameTime;
+      instance.iteration += 1;
+      maximizeInContainer();
+      return;
+    }
+
+    if ( Player.state === "playing" )
+    {
+      instance.evaluateAt( instance.entryPoint );
+      frameTime = getTimer() - baseFrameTime;
+      instance.iteration += 1;
+    }
+  };
+  
+  var maximizeInContainer = function()
+  {
+    var nominalWidth = rootBitmap.bitmapData.width;
+    var nominalHeight = rootBitmap.bitmapData.height;
+
+    var ratio = 1;
+    if ( !isOptimal ) {
+      ratio = Math.min( $.width / root.scaleX / nominalWidth, $.height / root.scaleY / nominalHeight );
+    }
+    rootBitmap.scaleX = ratio;
+    rootBitmap.scaleY = ratio;
+    
+    rootBitmap.x = Math.floor( ( $.width / root.scaleX - nominalWidth * ratio ) / 2 );
+    rootBitmap.y = Math.floor( ( $.height / root.scaleY - nominalHeight * ratio ) / 2 );
+  };
+
+  var getMasterTime = function() {
+    var lastTime = 0;
+    var baseTimer = 0;
+    var lastStatePlaying = false;
+    var lastOffsetTime = 0;
+    var frames = 0;
+
+    return function() {
+      if ( Player.time !== lastTime || ( !lastStatePlaying && ( Player.state === "playing" ) ) ) {
+        fps = frames * 1000 / ( lastOffsetTime - lastTime );
+        frames = 0;
+        lastTime = Player.time;
+        baseTimer = getTimer();
+        lastOffsetTime = lastTime;
+        lastStatePlaying = true;
+        return lastTime;
+      }
+
+      if ( Player.state !== "playing" ) {
+        lastStatePlaying = false;
+        return lastOffsetTime;
+      }
+
+      frames += 1;
+      lastOffsetTime = lastTime + ( getTimer() - baseTimer );
+      return lastOffsetTime;
+    };
+  }();
+
+  var presentationEvaluate = function( input, output ) {
+    output.time = lastUpdate;
+    output.stageWidth = lastWidth;
+    output.stageHeight = lastHeight;
+
+    var aspect = input( "aspectRatio" );
+    var maxHeight = input( "maxHeight" );
+    var height = Math.min( lastHeight, lastWidth / aspect );
+    if ( height > maxHeight ) {
+      isOptimal = false;
+      height = maxHeight;
+    }
+    else {
+      isOptimal = true;
+    }
+    output.width = Math.floor( height * aspect );
+    output.height = Math.floor( height );
+    Node.globalScale = height / input( "nominalHeight" );
+  };
+
+  var outputEvaluate = function( input ) {
+    var signal = input( "signal" );
+    if ( rootBitmapData !== signal ) {
+      rootBitmapData = signal;
+      rootBitmap.bitmapData = rootBitmapData;
+      rootBitmap.smoothing = true;
+    }
+  };
+
+  var outputDispose = function() {
+    rootBitmap.bitmapData = null;
+    rootBitmapData = null;
+  };
+
+  var dbgOutputEvaluate = function( input ) {
+    outputEvaluate( input );
+    var frameRate = $.hasOwnProperty( "frameRate" ) ? ( $.frameRate || 24 ) : 24;
+    var load = Math.round( frameTime * frameRate / 10 );
+    var str = "AkariX / biliScript - Onscreen (Load: " + load + "%)\n";
+    str += "Nominal FPS: " + frameRate + ", Current: " + Math.round( fps ) + "\n";
+    str += "Time usage: " + axUnpack( cast( "String", Debug.timeUsage ) ) + "\n";
+    str += input( "message" );
+
+    dbgOutput.visible = true;
+    dbgOutput.text = str;
+  };
+
+  Node.implement( "Presentation", {
+    input : [
+      { name : "aspectRatio", type : "Number", value : 16 / 9 },
+      { name : "maxHeight", type : "Number", value : 720 },
+      { name : "nominalHeight", type : "Number", value : 720 }
+    ],
+    output : [
+      { name : "time", type : "Number" },
+      { name : "width", type : "Number" },
+      { name : "height", type : "Number" }
+    ],
+    evaluate : presentationEvaluate,
+    dispose : function() {}
+  } );
+
+  Node.implement( "Output", {
+    input : [ { name : "signal", type : "Signal" } ],
+    output : [],
+    evaluate : outputEvaluate,
+    dispose : outputDispose
+  } );
+
+  Node.implement( "DebugOutput", {
+    input : [ { name : "signal", type : "Signal" }, { name : "message", type : "String", value : "" } ],
+    output : [],
+    evaluate : dbgOutputEvaluate,
+    dispose : outputDispose
+  } );
+
+  var requestInput = function( name ) {
+    var index = Debug.stack[ Debug.stack.length - 1 ];
+
+    var node = instance.nodes[ index ];
+    var type = Node.getImplementation( node.type );
+
+    if ( type.inputRev.hasOwnProperty( name ) ) {
+      if ( node.links.hasOwnProperty( name ) ) {
+        var link = node.links[ name ];
+        var target = instance.nodes[ link.target + 0 ];
+        var targetType = Node.getImplementation( target.type );
+
+        if ( targetType.stateful || ( target.iteration !== instance.iteration ) ) {
+          instance.evaluateAt( link.target );
+        }
+
+        // Stuff should always be copied, not modified. For performance reasons a clone outside nodes is infeasible.
+        // Implementations should take care of data properly,
+        // e.g. push calculated values onto new arrays, Array.concat, copyPixels onto their cached canvas.
+        var value = target.output[ link.targetOutput + "" ];
+        value = axAs( targetType.output[ targetType.outputRev[ link.targetOutput + "" ] + 0 ].type, value );
+        node.input[ name ] = axUnpack( cast( type.input[ type.inputRev[ name ] + 0 ].type, value ) );
+      }
+      else {
+        if ( !node.input.hasOwnProperty( name ) ) {
+          node.input[ name ] = axClone( type.input[ type.inputRev[ name ] + 0 ].value );
+        }
+        node.input[ name ] = axUnpack( node.input[ name ] );
+      }
+
+      Debug.local = node.input;
+      return node.input[ name ];
+    }
+    else {
+      Debug.throw( "@ Compositor.biliScript, Compositor.requestInput: Request of undefined input parameter: " + name );
+    }
+  };
+
+  var evaluateAt = function( index ) {
+    Debug.push( index );
+
+    var node = this.nodes[ index ];
+    var type = Node.getImplementation( node.type );
+
+    if( type ) {
+      if ( node.iteration !== this.iteration ) {
+        if ( type.stateful && type.iterationDispose ) {
+          type.iterationDispose( node.iCache );
+          node.iteration = this.iteration;
+        }
+      }
+      type.evaluate( requestInput, node.output, node.linkage, node.cache, node.iCache );
+      node.iteration = this.iteration;
+    }
+    else {
+      Debug.throw( "@ Compositor.biliScript, Compositor.evaluateAt: Evaluation of node type that no class implemented: " + node.type );
+    }
+
+    Debug.pop();
+  };
+
+  var initialize = function( tree ) {
+    var nodes = [];
+    var i = 0;
+    var j = 0;
+
+    if ( tree.nodes[ tree.entryPoint + 0 ].type !== "Output" && tree.nodes[ tree.entryPoint + 0 ].type !== "DebugOutput" ) {
+      Debug.throw( "@ Compositor.biliScript, Compositor.initialize: Entry point is not Output or DebugOutput." );
+    }
+
+    for ( i = 0; i < tree.nodes.length; i ++ ) {
+      nodes[ i ] = extend( tree.nodes[ i ], {
+        iteration : -1,
+        cache : {},
+        iCache : {},
+        output : {},
+        linkage : {}
+      } );
+    }
+
+    for ( i = 0; i < tree.nodes.length; i ++ ) {
+      foreach( nodes[ i + 0 ].links, function( inp, tar ) {
+        nodes[ tar.target + 0 ].linkage[ tar.targetOutput + "" ] = true;
+      });
+    }
+
+    this.nodes = nodes;
+    this.entryPoint = tree.entryPoint;
+    this.isActive = true;
+    this.iteration = 0;
+
+    root.addEventListener( "enterFrame", frameFunction );
+  };
+
+  var dispose = function() {
+    if ( !instance.isActive ) {
+      return;
+    }
+    root.removeEventListener( "enterFrame", frameFunction );
+
+    var i = 0;
+    var node = null;
+    var type = null;
+
+    for ( i = 0; i < instance.nodes.length; i ++ ) {
+      node = instance.nodes[ i ];
+      type = Node.getImplementation( node.type );
+
+      if ( type.dispose ) {
+        type.dispose( node.output, node.cache );
+      }
+    }
+    instance.nodes = null;
+    instance.isActive = false;
+    dbgOutput.visible = false;
+  };
+
+  instance = {
+    isActive : false,
+    initialize : initialize,
+    evaluateAt : evaluateAt,
+    dispose : dispose
+  };
+
+  return instance;
+}();
+
+// Export
+
+extend( AkariX, {
+  Compositor : Compositor
+});

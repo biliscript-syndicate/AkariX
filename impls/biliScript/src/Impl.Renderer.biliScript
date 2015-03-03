@@ -1,0 +1,486 @@
+// {{Depend : API}} //
+// {{Depend : Utilities}} //
+// {{Depend : Spline}} //
+
+/* Impl for ISolidNode
+ */
+
+( function() {
+  var evaluate = function( input, output, linkage, cache ) {
+    var width = Math.floor( input( "width" ) * Node.globalScale );
+    var height = Math.floor( input( "height" ) * Node.globalScale );
+    var color = input( "color" );
+
+    if ( !output.output ) {
+      output.output = Bitmap.createBitmapData( width, height, true, Color.toHardware( color ) );
+      return;
+    }
+    if ( output.output.width !== width || output.output.height !== height ) {
+      output.output.dispose();
+      output.output = Bitmap.createBitmapData( width, height, true, Color.toHardware( color ) );
+    }
+    var hwC = Color.toHardware( color );
+    if ( cache.color !== hwC ) {
+      output.output.fillRect( output.output.rect, hwC );
+      cache.color = hwC;
+    }
+  };
+
+  Node.implement( "Solid", {
+    input : [
+      { name : "width", type : "Number", value : 100 },
+      { name : "height", type : "Number", value : 100 },
+      { name : "color", type : "Color", value : [ "rgb", 1, 1, 1, 1 ] }
+    ],
+    output : [ { name : "output", type : "Signal" } ],
+    evaluate : evaluate
+  } );
+})();
+
+/* Impl for IRendererNode
+ */
+
+( function() {
+  var originPoint = $.createPoint( 0, 0 );
+  var cubicAvaliable = ( $.createShape({}) ).graphics.hasOwnProperty( "cubicCurveTo" );
+
+  var toNativeMatrix = function( m ) {
+    if ( ( m.constructor === ([]).constructor ) && m.length === 6 ) {
+      var mat = $.createMatrix.apply( $, m );
+      mat.scale( Node.globalScale, Node.globalScale );
+      return mat;
+    }
+    else {
+      Debug.throw( "@ Impl.Renderer.biliScript, IRendererNode.toNativeMatrix: Not valid Matrix to be converted to native 2D Matrix." );
+    }
+  };
+
+  var resolveGradientBrush = function( graphics, b ) {
+    var gType = b.polar ? "radial" : "linear";
+    var colors = [];
+    var alphas = [];
+    var ratios = [];
+
+    var i = 0;
+    var hw = 0;
+    for( i = 0; i < b.colors.length; i ++ ) {
+      hw = Color.toHardware( b.colors[ i ] );
+      colors[ i ] = hw & 0xFFFFFF;
+      alphas[ i ] = ( ( hw & 0xFF000000 ) >>> 24 ) / 0xFF;
+      ratios[ i ] = Math.floor( i / ( b.colors.length - 1 ) * 255 );
+    }
+
+    if ( b.ratios && b.ratios.length === b.colors.length ) {
+      for( i = 0; i < b.colors.length; i ++ ) {
+        ratios[ i ] = Math.floor( b.ratios[ i ] * 255 );
+      }
+    }
+
+    var spreadMethod = b.spreadMethod || "pad";
+    var matrix = b.matrix ? toNativeMatrix( b.matrix ) : null;
+    var fPR = b.focalPointRatio || 0;
+
+    return [ gType, colors, alphas, ratios, matrix, spreadMethod, "rgb", focalPointRatio ];
+  };
+
+  var resolveBitmapBrush = function( graphics, b, tempTexArr ) {
+    var tex = b.texture;
+    var needCt = b.color && b.color.length > 0;
+    var needRf = b.spreadMethod === "reflect";
+    if ( needCt || needRf ) {
+      // Abstraction *LEAK* here. A BitmapData has to be created every time to avoid corruption to original Signal.
+      var newTex = null;
+      if ( needRf ) {
+        newTex = Bitmap.createBitmapData( tex.width * 2, tex.height * 2, true, 0 );
+        newTex.lock();
+
+        newTex.copyPixels( tex, tex.rect, originPoint, null, null, false );
+
+        var vMatrix = $.createMatrix( 1, 0, 0, 1, 0, 0 );
+        vMatrix.scale( 1, -1 );
+        vMatrix.translate( 0, tex.height * 2 );
+        newTex.draw( tex, vMatrix, null, "normal", null, false );
+        vMatrix.scale( -1, 1 );
+        vMatrix.translate( tex.width * 2, 0 );
+        newTex.draw( tex, vMatrix, null, "normal", null, false );
+        vMatrix.scale( 1, -1 );
+        vMatrix.translate( 0, tex.height * 2 );
+        newTex.draw( tex, vMatrix, null, "normal", null, false );
+      }
+      else {
+        newTex = Bitmap.createBitmapData( tex.width, tex.height, true, 0 );
+        newTex.lock();
+
+        newTex.copyPixels( tex, tex.rect, originPoint, null, null, false );
+      }
+
+      if ( needCt ) {
+        var rgb = Color.toRgb( b.color[ 0 ] );
+        var ct = $.createColorTransform( rgb[ 2 ], rgb[ 3 ], rgb[ 4 ], rgb[ 1 ], 0, 0, 0, 0 );
+        newTex.colorTransform( newTex.rect, ct );
+      }
+
+      newTex.unlock();
+      tex = newTex;
+      tempTexArr.push( newTex );
+    }
+
+    return [ tex, b.matrix ? toNativeMatrix( b.matrix ) : null, needRf || ( b.spreadMethod === "repeat" ), true ];
+  };
+
+  var transformPoints = function( pline, object, world, projection ) {
+    var i = 0;
+    var x = 0;
+    var y = 0;
+    var z = 0;
+    var w = 1;
+    var x2 = 0;
+    var y2 = 0;
+    var z2 = 0;
+    var w2 = 1;
+    var out = [];
+
+    for ( i = 0; i < pline.length; i ++ ) {
+      x = pline[ i ][ 0 ] || 0;
+      y = pline[ i ][ 1 ] || 0;
+      z = pline[ i ][ 2 ] || 0;
+      w = pline[ i ][ 3 ] || 1;
+
+      if ( object ) {
+        x2 = x * object[ 0 ] + y * object[ 4 ] + z * object[ 8 ] + w * object[ 12 ];
+        y2 = x * object[ 1 ] + y * object[ 5 ] + z * object[ 9 ] + w * object[ 13 ];
+        z2 = x * object[ 2 ] + y * object[ 6 ] + z * object[ 10 ] + w * object[ 14 ];
+        w2 = x * object[ 3 ] + y * object[ 7 ] + z * object[ 11 ] + w * object[ 15 ];
+        x = x2;
+        y = y2;
+        z = z2;
+        w = w2;
+      }
+      if ( world ) {
+        x2 = x * world[ 0 ] + y * world[ 4 ] + z * world[ 8 ] + w * world[ 12 ];
+        y2 = x * world[ 1 ] + y * world[ 5 ] + z * world[ 9 ] + w * world[ 13 ];
+        z2 = x * world[ 2 ] + y * world[ 6 ] + z * world[ 10 ] + w * world[ 14 ];
+        w2 = x * world[ 3 ] + y * world[ 7 ] + z * world[ 11 ] + w * world[ 15 ];
+        x = x2;
+        y = y2;
+        z = z2;
+        w = w2;
+      }
+      if ( projection ) {
+        x2 = x * projection[ 0 ] + y * projection[ 4 ] + z * projection[ 8 ] + w * projection[ 12 ];
+        y2 = x * projection[ 1 ] + y * projection[ 5 ] + z * projection[ 9 ] + w * projection[ 13 ];
+        z2 = x * projection[ 2 ] + y * projection[ 6 ] + z * projection[ 10 ] + w * projection[ 14 ];
+        w2 = x * projection[ 3 ] + y * projection[ 7 ] + z * projection[ 11 ] + w * projection[ 15 ];
+        x = x2;
+        y = y2;
+        z = z2;
+        w = w2;
+      }
+
+      out.push([ x * Node.globalScale, y * Node.globalScale, w ]);
+    }
+
+    return out;
+  };
+
+  var tmpMatrix3D = $.createMatrix3D( $.toNumberVector([ 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 ]) );
+  var xAxis = $.createVector3D( 1, 0, 0, 0 );
+  var yAxis = $.createVector3D( 0, 1, 0, 0 );
+  var zAxis = $.createVector3D( 0, 0, 1, 0 );
+
+  var renderPrimitive = function( graphics, p, world, projection ) {
+    var tempTexArr = [];
+    graphics.clear();
+    var fillBegan = false;
+
+    // setting up fill and stroke
+    if ( p.fill ) {
+      if ( p.fill.type === "flat" ) {
+        if ( p.fill.colors && p.fill.colors.length > 0 ) {
+          if ( p.fill.colors.length === 1 ) {
+            var hw = Color.toHardware( p.fill.colors[ 0 ] );
+            graphics.beginFill( ( hw & 0xFFFFFF ), ( ( hw & 0xFF000000 ) >>> 24 ) / 0xFF );
+          }
+          else {
+            graphics.beginGradientFill.apply( graphics, resolveGradientBrush( graphics, p.fill ) );
+          }
+          fillBegan = true;
+        }
+        else {
+          Debug.throw( "@ Impl.Renderer.biliScript, IRendererNode.renderPrimitive: No color for flat brush." );
+        }
+      }
+      else if ( p.fill.type === "texture" ) {
+        if ( axTypeOf( p.fill.texture ) === "Signal" ) {
+          graphics.beginBitmapFill.apply( graphics, resolveBitmapBrush( graphics, p.fill, tempTexArr ) );
+          fillBegan = true;
+        }
+        else {
+          Debug.throw( "@ Impl.Renderer.biliScript, IRendererNode.renderPrimitive: No Signal for texture brush." );
+        }
+      }
+    }
+
+    if ( p.stroke && p.stroke.type && p.stroke.type !== "none" && ( typeof p.stroke.width === "number" ) && p.stroke.width > 0 ) {
+      var caps = p.stroke.caps || "round";
+      var joints = p.stroke.joints || "round";
+      var miterLimit = p.stroke.miterLimit || 3;
+
+      if ( p.stroke.type === "flat" ) {
+        if ( p.stroke.colors && p.stroke.colors.length > 0 ) {
+          if ( p.stroke.colors.length === 1 ) {
+            var hw = Color.toHardware( p.stroke.colors[ 0 ] );
+            graphics.lineStyle( p.stroke.width * Node.globalScale, ( hw & 0xFFFFFF ), ( ( hw & 0xFF000000 ) >>> 24 ) / 0xFF, false, "normal", caps, joints, miterLimit );
+          }
+          else {
+            graphics.lineStyle( p.stroke.width * Node.globalScale, 0, 1, false, "normal", caps, joints, miterLimit );
+            graphics.lineGradientStyle.apply( graphics, resolveGradientBrush( graphics, p.stroke ) );
+          }
+        }
+        else {
+          Debug.throw( "@ Impl.Renderer.biliScript, IRendererNode.renderPrimitive: No color for flat brush." );
+        }
+      }
+      else if ( p.stroke.type === "texture" ) {
+        if ( axTypeOf( p.stroke.texture ) === "Signal" ) {
+          graphics.lineStyle( p.stroke.width * Node.globalScale, 0, 1, false, "normal", caps, joints, miterLimit );
+          graphics.lineBitmapStyle.apply( graphics, resolveBitmapBrush( graphics, p.stroke, tempTexArr ) );
+        }
+        else {
+          Debug.throw( "@ Impl.Renderer.biliScript, IRendererNode.renderPrimitive: No Signal for texture brush." );
+        }
+      }
+    }
+
+    // set up object transformation
+    var mat = null;
+    if ( p.transform ) {
+      var mat = tmpMatrix3D;
+      mat.identity();
+      if ( p.transform.anchor && p.transform.anchor.length > 0 ) {
+        mat.appendTranslation( - p.transform.anchor[ 0 ] || 0, - p.transform.anchor[ 1 ] || 0, - p.transform.anchor[ 2 ] || 0 );
+      }
+      if ( p.transform.scale && p.transform.scale.length > 0 ) {
+        mat.appendScale( p.transform.scale[ 0 ] || 1, p.transform.scale[ 1 ] || 1, p.transform.scale[ 2 ] || 1 );
+      }
+      if ( p.transform.rotation && p.transform.rotation.length > 0 ) {
+        mat.appendRotation( p.transform.rotation[ 0 ] || 0, xAxis );
+        mat.appendRotation( p.transform.rotation[ 1 ] || 0, yAxis );
+        mat.appendRotation( p.transform.rotation[ 2 ] || 0, zAxis );
+      }
+      if ( p.transform.position && p.transform.position.length > 0 ) {
+        mat.appendTranslation( p.transform.position[ 0 ] || 0, p.transform.position[ 1 ] || 0, p.transform.position[ 2 ] || 0 );
+      }
+      mat = mat.rawData;
+    }
+    
+    if ( p.type === "Polyline" ) {
+      var points = transformPoints( p.vertices, mat, world, projection );
+      if ( points.length > 0 ) {
+        var commands = $.toIntVector([ 1 ]);
+        var data = $.toNumberVector([ points[ 0 ][ 0 ] / points[ 0 ][ 2 ], points[ 0 ][ 1 ] / points[ 0 ][ 2 ] ]);
+
+        var i = 0;
+        for ( i = 1; i < points.length; i ++ ) {
+          commands.push( 2 );
+          data.push( points[ i ][ 0 ] / points[ i ][ 2 ] );
+          data.push( points[ i ][ 1 ] / points[ i ][ 2 ] );
+        }
+
+        graphics.drawPath( commands, data );
+      }
+    }
+    else if ( p.type === "Spline" ) {
+      var commands = $.toIntVector([]);
+      var data = $.toNumberVector([]);
+      var isFirst = true;
+      var points = null;
+      var bez = null;
+      var pl = null;
+
+      var i = 0;
+      var j = 0;
+      for ( i = 0; i < p.vertices.length; i ++ ) {
+        points = transformPoints( p.vertices[ i ], mat, world, projection );
+        if ( points.length === 1 ) {
+          commands.push( 1 );
+          data.push( points[ 0 ][ 0 ] / points[ 0 ][ 2 ] );
+          data.push( points[ 0 ][ 1 ] / points[ 0 ][ 2 ] );
+        }
+        else if ( points.length === 2 ) {
+          if ( isFirst ) {
+            commands.push( 1 );
+            isFirst = false;
+          }
+          else { 
+            commands.push( 2 );
+          }
+          commands.push( 2 );
+          data.push( points[ 0 ][ 0 ] / points[ 0 ][ 2 ] );
+          data.push( points[ 0 ][ 1 ] / points[ 0 ][ 2 ] );
+          data.push( points[ 1 ][ 0 ] / points[ 1 ][ 2 ] );
+          data.push( points[ 1 ][ 1 ] / points[ 1 ][ 2 ] );
+        }
+        else if ( points.length === 3 && points[ 0 ][ 2 ] === 1 && points[ 1 ][ 2 ] === 1 && points[ 2 ][ 2 ] === 1 ) {
+          if ( isFirst ) {
+            commands.push( 1 );
+            isFirst = false;
+          }
+          else { 
+            commands.push( 2 );
+          }
+          commands.push( 3 );
+          data.push( points[ 0 ][ 0 ] );
+          data.push( points[ 0 ][ 1 ] );
+          data.push( points[ 1 ][ 0 ] );
+          data.push( points[ 1 ][ 1 ] );
+          data.push( points[ 2 ][ 0 ] );
+          data.push( points[ 2 ][ 1 ] );
+        }
+        else if ( cubicAvaliable && points.length === 4 && points[ 0 ][ 2 ] === 1 && points[ 1 ][ 2 ] === 1 && points[ 2 ][ 2 ] === 1 && points[ 3 ][ 2 ] === 1 ) {
+          if ( isFirst ) {
+            commands.push( 1 );
+            isFirst = false;
+          }
+          else { 
+            commands.push( 2 );
+          }
+          commands.push( 6 );
+          data.push( points[ 0 ][ 0 ] );
+          data.push( points[ 0 ][ 1 ] );
+          data.push( points[ 1 ][ 0 ] );
+          data.push( points[ 1 ][ 1 ] );
+          data.push( points[ 2 ][ 0 ] );
+          data.push( points[ 2 ][ 1 ] );
+          data.push( points[ 3 ][ 0 ] );
+          data.push( points[ 3 ][ 1 ] );
+        }
+        else {
+          bez = Bezier( points );
+          bez.projected = true;
+          // Forcing precision to 1 makes sense here because after transform we draw the spline on screen,
+          // anything smaller than 1 pixel would be barely visible while expensive to calculate.
+          pl = bez.toPolyline( 1 );
+
+          for ( j = 0; j < pl.length; j ++ ) {
+            if ( isFirst ) {
+              commands.push( 1 );
+              isFirst = false;
+            }
+            else { 
+              commands.push( 2 );
+            }
+            data.push( pl[ j ][ 0 ] / pl[ j ][ 2 ] );
+            data.push( pl[ j ][ 1 ] / pl[ j ][ 2 ] );
+          }
+        }
+      }
+
+      graphics.drawPath( commands, data );
+    }
+
+    if ( fillBegan ) {
+      graphics.endFill();
+    }
+
+    // Housekeeping for temp textures generated by resolveBitmapBrush
+    var i = 0;
+    for ( i = tempTexArr.length; i --; ) {
+      tempTexArr[ i ].dispose();
+    }
+  };
+
+  var evaluate = function( input, output, linkage, cache ) {
+    var width = Math.floor( input( "width" ) );
+    var height = Math.floor( input( "height" ) );
+    if ( !output.output || output.output.width !== width || output.output.height !== height ) {
+      if ( output.output ) {
+        output.output.dispose();
+      }
+      output.output = Bitmap.createBitmapData( width, height, true, 0 );
+      cache.cacheReady = false;
+    }
+
+    var cached = input( "cached" );
+    if ( cached && cache.cacheReady ) {
+      return;
+    }
+
+    if ( !cache.canvas ) {
+      cache.canvas = $.createShape( {
+        lifeTime : 810114514
+      });
+      
+      ScriptManager.popEl( cache.canvas );
+      
+      cache.canvas.transform.matrix3D = null;
+      cache.canvas.cacheAsBitmap = false;
+    }
+
+    var world = input( "world" );
+    var projection = input( "projection" );
+
+    var surface = output.output;
+    var graphics = cache.canvas.graphics;
+    var p = null;
+    surface.lock();
+    surface.fillRect( surface.rect, 0 );
+
+    var content = input( "content" );
+
+    if ( projection ) {
+      // TODO: Sort primitives by depth
+    }
+
+    var i = 0;
+    for ( i = 0; i < content.length; i ++ ) {
+      p = content[ i ];
+      if ( p.type === "Signal" ) {
+        if ( !p.fill || p.fill.type !== "texture" || axTypeOf( p.fill.texture ) !== "Signal" ) {
+          Debug.throw( "@ Impl.Renderer.biliScript, IRendererNode.evaluate: No Signal privided with Signal primitive." );
+        }
+        if ( ( p.blend && p.blend !== "normal" ) || p.fill.matrix || ( p.fill.color && p.fill.color.length > 0 ) ) {
+          // Draw required
+          var ct = null;
+          if ( p.fill.color && p.fill.color.length > 0 ) {
+            var rgb = Color.toRgb( p.fill.color[ 0 ] );
+            ct = $.createColorTransform( rgb[ 2 ], rgb[ 3 ], rgb[ 4 ], rgb[ 1 ], 0, 0, 0, 0 );
+          }
+          surface.draw( p.fill.texture, p.fill.matrix ? toNativeMatrix( p.fill.matrix ) : null, ct, p.blend, null, true );
+        }
+        else {
+          surface.copyPixels( p.fill.texture, p.fill.texture.rect, originPoint, null, null, true );
+        }
+      }
+      else {
+        renderPrimitive( graphics, p, world, projection );
+        surface.draw( cache.canvas, null, null, p.blend || "normal", null, false );
+      }
+    }
+
+    surface.unlock();
+
+    cache.cacheReady = true;
+  };
+
+  var dispose = function( output, cache ) {
+    if ( output.output ) {
+      output.output.dispose();
+      output.output = null;
+    }
+  };
+
+  Node.implement( "Renderer", {
+    input : [
+      { name : "width", type : "Number", value : 100 },
+      { name : "height", type : "Number", value : 100 },
+      { name : "content", type : "Drawable", value : [] },
+      { name : "world", type : "Matrix", value : null },
+      { name : "projection", type : "Matrix", value : null },
+      { name : "cached", type : "Boolean", value : false }
+    ],
+    output : [ { name : "output", type : "Signal" } ],
+    evaluate : evaluate,
+    dispose : dispose
+  } );
+})();

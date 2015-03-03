@@ -1,0 +1,33 @@
+// {{Depend : Utilities}} //
+
+/* Code for API Layer
+ */
+
+var Node = function() {
+  var implRegister = {};
+
+  var getImplementation = function( type ) {
+    return implRegister[ type ];
+  };
+
+  var implement = function( name, class ) {
+    class.inputRev = {};
+    class.outputRev = {};
+
+    var i = 0;
+    for( i = 0; i < class.input.length; i ++ ) {
+      class.inputRev[ class.input[ i + 0 ].name + "" ] = i;
+    }
+    for( i = 0; i < class.output.length; i ++ ) {
+      class.outputRev[ class.output[ i + 0 ].name + "" ] = i;
+    }
+
+    implRegister[ name ] = class;
+  };
+
+  return {
+    getImplementation : getImplementation,
+    implement : implement,
+    globalScale : 1.0
+  };
+}();

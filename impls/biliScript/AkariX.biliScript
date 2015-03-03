@@ -1,0 +1,3333 @@
+/* AkariX - v20131101 
+ * Copyright (C) 2013 
+ * <https://github.com/akaza-akari/AkariX>
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ * 
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ * 
+ * As additional permission under GNU GPL version 3 section 7, you
+ * may distribute non-source (e.g., minimized or compacted) forms of
+ * that code without the copy of the GNU GPL normally required by
+ * section 4, provided you include this license notice and a URL
+ * through which recipients can access the Corresponding Source.
+ */
+
+if ( Global._get( "__axExport" ) ) {
+  (Global._get( "__axExport" )).Compositor.dispose();
+}
+
+(function() {
+
+var axInit = function(){
+
+var AkariX = {};
+
+
+var undef = ( function( a ) { return a; } )();
+
+var Debug = {
+  throw : function ( message ) {
+    trace( message );
+    Compositor.dispose();
+  },
+  dump : function() {
+    trace( "Trace: " + axUnpack( cast( "String", this.stack ) ) );
+    trace( "Local Input: " + axUnpack( cast( "String", this.local ) ) );
+  },
+  stack : [],
+  local : {},
+  timeUsage : [],
+  baseTime : 0,
+  push : function( index ) {
+    if ( this.stack.length > 0 ) {
+      var old = this.stack[ this.stack.length - 1 ];
+      this.timeUsage[ old ] = ( this.timeUsage[ old ] || 0 ) + getTimer() - this.baseTime;
+    }
+    this.stack.push( index );
+    this.baseTime = getTimer();
+  },
+  pop : function() {
+    var index = this.stack.pop();
+    this.timeUsage[ index ] = ( this.timeUsage[ index ] || 0 ) + getTimer() - this.baseTime;
+    this.baseTime = getTimer();
+  }
+};
+
+var extend = function( destination, source ) {
+  // Iterate through the source
+  foreach ( source, function( key, object ) {
+    destination[ key.toString() ] = object;
+  });
+  
+  return destination;
+};
+
+// For deep cloning Vectors, Hashes and such. NO Signals!
+var axClone = function( object ) {
+  var axType = axTypeOf( object );
+  var value = axUnpack( object );
+
+  if ( !value || ( value === true ) ) {
+    return value;
+  }
+
+  if ( typeof value === "function" ) {
+    return value;
+  }
+
+  switch( axType ) {
+    case "Number":
+    case "String":
+    case "Boolean":
+      // Avoid calling clone() for immutables or primitives
+      return object;
+      break;
+    case "Signal":
+      // Avoid cloning Signal in Hashes / Vectors for performance.
+      // Assuming that implementations does not modify Signals in Drawables,
+      // and Signals are cloned explicitly (i.e. copyPixels) whenever needed by a node implementation.
+      // Using axClone for cloning Signal is WRONG!
+      return object;
+      break;
+    case "Any":
+      return clone( object );
+      break;
+  }
+
+  var stack = [ [ object, null, 0 ] ];
+  var ret = null;
+
+  while( stack.length > 0 ) {
+    var current = stack.pop();
+    var obj = current[ 0 ];
+    var nObj = current[ 1 ];
+    var i = current[ 2 ];
+
+    if ( obj.constructor === ([]).constructor && !current[ 3 ] ) {
+      if ( i === 0 ) {
+        nObj = [];
+      }
+      else {
+        nObj.push( ret );
+      }
+      for( ; i < obj.length; i ++ ) {
+        if ( obj[ i ] && ( (obj[ i ]).constructor === ({}).constructor || (obj[ i ]).constructor === ([]).constructor ) ) {
+          stack.push( [ obj, nObj, i + 1 ] );
+          stack.push( [ obj[ i ], null, 0 ] );
+          break;
+        }
+        else {
+          nObj.push( obj[ i ] );
+        }
+      }
+
+      if ( i === obj.length ) {
+        ret = nObj;
+      }
+    }
+    else if ( obj.constructor === ({}).constructor || current[ 3 ] ) {
+      if ( current[ 3 ] ) {
+        if ( i === 0 ) {
+          nObj = {};
+        }
+        else {
+          nObj[ obj[ i - 1 ][ 0 ].toString() ] = ret;
+        }
+        for( ; i < obj.length; i ++ ) {
+          if ( obj[ i ][ 1 ] && ( (obj[ i ][ 1 ]).constructor === ({}).constructor || (obj[ i ][ 1 ]).constructor === ([]).constructor ) ) {
+            stack.push( [ obj, nObj, i + 1, true ] );
+            stack.push( [ obj[ i ][ 1 ], null, 0 ] );
+            break;
+          }
+          else {
+            nObj[ obj[ i ][ 0 ].toString() ] = obj[ i ][ 1 ];
+          }
+        }
+
+        if ( i === obj.length ) {
+          ret = nObj;
+        }
+      }
+      else {
+        var vec = [];
+        foreach( obj, function( k, v ) {
+          vec.push( [ k, v ] );
+          return 0;
+        });
+
+        stack.push( [ vec, null, 0, true ] );
+      }
+    }
+  }
+
+  return ret;
+};
+
+var Color = function() {
+  var xN = 0.95047;
+  var yN = 1.0000;
+  var zN = 1.08883;
+
+  var labInvF = function( t ) {
+    if ( t > 0.008856451679035631 ) {
+      return t * t * t;
+    }
+    else {
+      return 0.12841854934601665 * ( t - 0.13793103448275862 );
+    }
+  };
+
+  var hslToRgb = function( hsl ) {
+    var h = hsl[ 2 ] % 360;
+    var c = ( 1 - Math.abs( 2 * hsl[ 4 ] - 1 ) ) * hsl[ 3 ];
+    var x = c * ( 1 - Math.abs( ( h / 60 ) % 2 - 1 ) );
+    var m = hsl[ 4 ] - c / 2;
+
+    if ( h < 60 ) {
+      return [ "rgb", hsl[ 1 ], c + m, x + m, m ];
+    }
+    if ( h < 120 ) {
+      return [ "rgb", hsl[ 1 ], x + m, c + m, m ];
+    }
+    if ( h < 180 ) {
+      return [ "rgb", hsl[ 1 ], m, c + m, x + m ];
+    }
+    if ( h < 240 ) {
+      return [ "rgb", hsl[ 1 ], m, x + m, c + m ];
+    }
+    if ( h < 300 ) {
+      return [ "rgb", hsl[ 1 ], x + m, m, c + m ];
+    }
+    return [ "rgb", hsl[ 1 ], c + m, m, x + m ];
+  };
+
+  var labToRgb = function( lab ) {
+    var t = ( lab[ 2 ] + 16 ) / 116;
+
+    var xyz = [
+      xN * labInvF( t + lab[ 3 ] / 500 ),
+      yN * labInvF( t ),
+      zN * labInvF( t - lab[ 4 ] / 200 )
+    ];
+
+    var rgb = [
+      "rgb",
+      lab[ 1 ],
+      3.2406 * xyz[ 0 ] - 1.5372 * xyz[ 1 ] - 0.4986 * xyz[ 2 ],
+      - 0.9689 * xyz[ 0 ] + 1.8758 * xyz[ 1 ] + 0.0415 * xyz[ 2 ],
+      0.0557 * xyz[ 0 ] - 0.2040 * xyz[ 1 ] + 1.0570 * xyz[ 2 ]
+    ];
+
+    for ( var i = 4; i >= 2; i -- ) {
+      if ( rgb[ 0 + i ] > 0.0031308 ) {
+        rgb[ 0 + i ] = 1.055 * Math.pow( rgb[ 0 + i ], 1 / 2.4 ) - 0.055;
+      }
+      else {
+        rgb[ 0 + i ] = 12.92 * rgb[ 0 + i ];
+      }
+    }
+
+    return rgb;
+  };
+
+  var rgbToHardware = function( rgb ) {
+    var a = Math.min( 255, Math.max( 0, Math.floor( rgb[ 1 ] * 255 ) ) );
+    var r = Math.min( 255, Math.max( 0, Math.floor( rgb[ 2 ] * 255 ) ) );
+    var g = Math.min( 255, Math.max( 0, Math.floor( rgb[ 3 ] * 255 ) ) );
+    var b = Math.min( 255, Math.max( 0, Math.floor( rgb[ 4 ] * 255 ) ) );
+    return ( a << 24 ) | ( r << 16 ) | ( g << 8 ) | b;
+  };
+
+  return {
+    toRgb : function( color ) {
+      switch ( color[ 0 ] ) {
+        case "rgb":
+          return color;
+          break;
+        case "lab":
+          return labToRgb( color );
+          break;
+        case "hsl":
+          return hslToRgb( color );
+          break;
+      }
+      Debug.throw( "@ Utilities.biliScript, Color.toRgb: Unindentified color format: " + color[ 0 ] );
+    },
+
+    toHardware : function( color ) {
+      return rgbToHardware( this.toRgb( color ) );
+    }
+  };
+}();
+
+var Vector = {
+  add : function() {
+    var dimension = arguments[ 0 ].length;
+    var result = [];
+    for ( var d = 0; d < dimension; d ++ ) {
+      result[ d ] = arguments[ 0 ][ d ];
+    }
+
+    for ( var i = 1; i < arguments.length; i ++ ) {
+      for ( var d = 0; d < dimension; d ++ ) {
+        result[ d ] += arguments[ i ][ d ] || 0;
+      }
+    }
+
+    return result;
+  },
+
+  subtract : function( a, b ) {
+    var dimension = a.length;
+    var result = [];
+
+    for ( var d = 0; d < dimension; d ++ ) {
+      result[ d ] = a[ d ] - ( b[ d ] || 0 );
+    }
+
+    return result;
+  },
+
+  dot : function( a, b ) {
+    var dimension = a.length;
+    var result = 0;
+
+    for ( var d = 0; d < dimension; d ++ ) {
+      result += a[ d ] * ( b[ d ] || 0 );
+    }
+
+    return result;
+  },
+
+  scale : function( v, s ) {
+    var dimension = v.length;
+    var result = [];
+
+    for ( var d = 0; d < dimension; d ++ ) {
+      result[ d ] = v[ d ] * s;
+    }
+
+    return result;
+  },
+
+  length : function( v ) {
+    var dimension = v.length;
+    var result = 0;
+
+    for ( var d = 0; d < dimension; d ++ ) {
+      result += v[ d ] * v[ d ];
+    }
+
+    result = Math.sqrt( result );
+
+    return result;
+  },
+
+  unit : function( v ) {
+    return this.scale( v, 1 / this.length( v ) );
+  },
+
+  angle : function( a, b ) {
+    return Math.acos( this.dot( a, b ) / ( this.length( a ) * this.length( b ) ) );
+  }
+};
+
+// Returns the type string for native object O in context of AkariX
+var axTypeOf = function() {
+  var bitmapDataClass = ( Bitmap.createBitmapData( 1, 1, true, 0xFFFFFFFF ) ).constructor;
+
+  return function( o ) {
+    if ( o === undef || o === null ) {
+      return "Any";
+    }
+    if ( o.hasOwnProperty( "__axAsType" ) && ( o[ "__axAsType" ] !== "Any" ) ) {
+      return o[ "__axAsType" ];
+    }
+    if ( typeof o === "number" ) {
+      return "Number";
+    }
+    if ( typeof o === "boolean" ) {
+      return "Boolean";
+    }
+    if ( typeof o === "string" ) {
+      return "String";
+    }
+    if ( o.constructor === ([]).constructor ) {
+      return "Vector";
+    }
+    if ( o instanceof bitmapDataClass ) {
+      return "Signal";
+    }
+    if ( o.constructor === ({}).constructor ) {
+      return "Hash";
+    }
+    return "Any";
+  };
+}();
+
+var axAs = function( type, value ) {
+  if ( type === "Any" ) {
+    return value;
+  }
+  if ( value.hasOwnProperty( "__axAsType" ) ) {
+    value[ "__axAsType" ] = type;
+    return value;
+  }
+  return {
+    "__axAsType" : type,
+    "__axValue" : value
+  };
+};
+
+var axUnpack = function( packed ) {
+  if ( packed === undef || packed === null ) {
+    return packed;
+  }
+  if ( packed.hasOwnProperty( "__axAsType" ) ) {
+    return packed[ "__axValue" ];
+  }
+  return packed;
+};
+
+var axSanity = function() {
+  var checks = {
+    Drawable : function( o ) {
+      if ( o.constructor === ([]).constructor ) {
+        var i = 0;
+        for ( i = 0; i < o.length; i ++ ) {
+          if ( !axSanity( "Primitive", o[ i + 0 ] ) ) {
+            return false;
+          }
+        }
+
+        return true;
+      }
+      else {
+        return false;
+      }
+    }
+  };
+
+  return function( type, value ) {
+    if ( checks.hasOwnProperty( type ) ) {
+      return checks[ type ]( value );
+    }
+    else {
+      return true;
+    }
+  };
+}();
+
+var cast = function() {
+  var strHashVec = function( o ) {
+    var stack = [];
+    stack.push( [ o, "", 0 ] );
+    var ret = "";
+
+    while( stack.length > 0 ) {
+      var current = stack.pop();
+      var obj = current[ 0 ];
+      var str = current[ 1 ];
+      var i = current[ 2 ];
+
+      if ( obj.constructor === ([]).constructor && !current[ 3 ] ) {
+        if ( i === 0 ) {
+          str = "[ ";
+        }
+        else {
+          str += ret + ", ";
+        }
+        for( ; i < obj.length; i ++ ) {
+          if ( obj[ i ] && ( (obj[ i ]).constructor === ({}).constructor || (obj[ i ]).constructor === ([]).constructor ) ) {
+            stack.push( [ obj, str, i + 1 ] );
+            stack.push( [ obj[ i ], "", 0 ] );
+            break;
+          }
+          else {
+            str += casts.String( axTypeOf( obj[ i ] ), obj[ i ] ) + ", ";
+          }
+        }
+
+        if ( i === obj.length ) {
+          ret = str.length > 2 ? str.substr( 0, str.length - 2 ) + " ]" : "[]";
+        }
+      }
+      else if ( obj.constructor === ({}).constructor || current[ 3 ] ) {
+        if ( current[ 3 ] ) {
+          if ( i === 0 ) {
+            str = "{ ";
+          }
+          else {
+            str += obj[ i - 1 ][ 0 ].toString() + " : " + ret + ", ";
+          }
+          for( ; i < obj.length; i ++ ) {
+            if ( obj[ i ][ 1 ] && ( (obj[ i ][ 1 ]).constructor === ({}).constructor || (obj[ i ][ 1 ]).constructor === ([]).constructor ) ) {
+              stack.push( [ obj, str, i + 1, true ] );
+              stack.push( [ obj[ i ][ 1 ], "", 0 ] );
+              break;
+            }
+            else {
+              str += obj[ i ][ 0 ].toString() + " : " + casts.String( axTypeOf( obj[ i ][ 1 ] ), obj[ i ][ 1 ] ) + ", ";
+            }
+          }
+
+          if ( i === obj.length ) {
+            ret = str.length > 2 ? str.substr( 0, str.length - 2 ) + " }" : "{}";
+          }
+        }
+        else {
+          var vec = [];
+          foreach( obj, function( k, v ) {
+            vec.push( [ k, v ] );
+            return 0;
+          });
+
+          stack.push( [ vec, "", 0, true ] );
+        }
+      }
+    }
+
+    return ret;
+  };
+
+  var casts = {
+    Any : function( axType, o ) {
+      return o;
+    },
+
+    Signal : function( axType, o ) {
+      if ( axType === "Signal" ) {
+        return o;
+      }
+      Debug.throw( "@ Utilities.biliScript, cast: Cannot cast to Signal from: " + axType );
+    },
+
+    Drawable : function( axType, o ) {
+      if ( axType === "Drawable" ) {
+        return o;
+      }
+      if ( axType === "Vector" && axSanity( "Drawable", o ) ) {
+        return o;
+      }
+      Debug.throw( "@ Utilities.biliScript, cast: Cannot cast to Drawable from: " + axType );
+    },
+
+    Brush : function( axType, o ) {
+      if ( axType === "Brush" ) {
+        return o;
+      }
+      Debug.throw( "@ Utilities.biliScript, cast: Cannot cast to Brush from: " + axType );
+    },
+
+    Hash : function( axType, o ) {
+      if ( axType === "Hash" || axType === "Brush" ) {
+        return o;
+      }
+      Debug.throw( "@ Utilities.biliScript, cast: Cannot cast to Hash from: " + axType );
+    },
+
+    Boolean : function( axType, o, undef ) {
+      if ( axType === "Boolean" ) {
+        return o;
+      }
+      if ( axType === "Any" ) {
+        return ( o !== null && o !== undef );
+      }
+      return true;
+    },
+
+    String : function( axType, o ) {
+      switch( axType ) {
+        case "Boolean":
+          return o ? "true" : "false";
+          break;
+        case "Number":
+          return o.toString();
+          break;
+        case "String":
+          return o;
+          break;
+        case "Color":
+          switch( o[ 0 ] ) {
+            case "rgb":
+              return "{C A : " + o[ 1 ] + ", R : " + o[ 2 ] + ", G : " + o[ 3 ] + ", B : " + o[ 4 ] + " }";
+              break;
+            case "lab":
+              return "{C A : " + o[ 1 ] + ", L : " + o[ 2 ] + ", A : " + o[ 3 ] + ", B : " + o[ 4 ] + " }";
+              break;
+            case "hsl":
+              return "{C A : " + o[ 1 ] + ", H : " + o[ 2 ] + ", S : " + o[ 3 ] + ", L : " + o[ 4 ] + " }";
+              break;
+            default:
+              Debug.throw( "@ Utilities.biliScript, cast: Unindentified color format: " + color[ 0 ] );
+              break;
+          }
+          break;
+        case "Vector":
+        case "Matrix":
+        case "Brush":
+        case "Drawable":
+        case "Hash":
+          return strHashVec( o );
+          break;
+        default:
+          if ( o === null ) {
+            return "null";
+          }
+          else if ( o === undef ) {
+            return "undefined";
+          }
+          else {
+            return "<Type: " + axType + ">";
+          }
+          break;
+      }
+    },
+
+    Number : function( axType, o ) {
+      switch( axType ) {
+        case "Number":
+          return o;
+          break;
+        case "String":
+          var n = parseFloat( o );
+          // There's no isNaN().
+          if ( n.toString() === "NaN" ) {
+            return o.length;
+          }
+
+          return n;
+          break;
+        case "Vector":
+        case "Drawable":
+          return o.length;
+          break;
+        case "Hash":
+          var length = 0;
+          foreach( o, function( k, v ) {
+            length ++;
+          });
+
+          return length;
+          break;
+        case "Color":
+          return Color.toHardware( o );
+          break;
+        default:
+          return 0;
+          break;
+      }
+    },
+    
+    Vector : function( axType, o ) {
+      switch( axType ) {
+        case "Number":
+          return [ o ];
+          break;
+        case "String":
+          var v = [];
+          var i = 0;
+          for ( i = 0; i < o.length; i ++ ) {
+            v[ i + 0 ] = o.charCodeAt( i );
+          }
+
+          return v;
+          break;
+        case "Vector":
+        case "Matrix":
+        case "Drawable":
+          return o;
+          break;
+        case "Color":
+          return o.slice( 1 );
+          break;
+        case "Hash":
+          var vec = [];
+          foreach( o, function( k, v ) {
+            vec.push( [ k, v ] );
+          });
+
+          return vec;
+          break;
+        default:
+          return [ o ];
+          break;
+      }
+    }
+  };
+
+  return function( type, value ) {
+    if ( casts.hasOwnProperty( type ) ) {
+      var axType = axTypeOf( value );
+      value = axUnpack( value );
+      return axAs( type, casts[ type ]( axType, value ) );
+    }
+    else {
+      Debug.throw( "@ Utilities.biliScript, cast: Undefined cast target: " + type );
+    }
+  };
+}();
+
+// Export
+
+extend( AkariX, {
+  Debug : Debug,
+  extend : extend,
+  cast : cast
+});
+
+/* Code for API Layer
+ */
+
+var Node = function() {
+  var implRegister = {};
+
+  var getImplementation = function( type ) {
+    return implRegister[ type ];
+  };
+
+  var implement = function( name, class ) {
+    class.inputRev = {};
+    class.outputRev = {};
+
+    var i = 0;
+    for( i = 0; i < class.input.length; i ++ ) {
+      class.inputRev[ class.input[ i + 0 ].name + "" ] = i;
+    }
+    for( i = 0; i < class.output.length; i ++ ) {
+      class.outputRev[ class.output[ i + 0 ].name + "" ] = i;
+    }
+
+    implRegister[ name ] = class;
+  };
+
+  return {
+    getImplementation : getImplementation,
+    implement : implement,
+    globalScale : 1.0
+  };
+}();
+
+
+var Compositor = function() {
+  var instance = null;
+
+  // Implementation of IPresentationNode, IOutputNode integrated
+  var root = null;
+  if ( $.hasOwnProperty( "root" ) && $.root ) {
+    root = $.root;
+  }
+  else {
+    root = $.createCanvas({ lifeTime : 810114514 });
+    root.transform.matrix3D = null;
+  }
+
+  var rootBitmap = Bitmap.createBitmap({ lifeTime : 810114514 });
+  var rootBitmapData = null;
+  ScriptManager.popEl( rootBitmap );
+  root.addChild( rootBitmap );
+  rootBitmap.transform.matrix3D = null;
+
+  var dbgOutput = $.createComment( "", { lifeTime : 334334334, fontsize : 9 } );
+  dbgOutput.bold = false;
+  ScriptManager.popEl( dbgOutput );
+  root.addChild( dbgOutput );
+  dbgOutput.transform.matrix3D = null;
+  dbgOutput.visible = false;
+
+  var lastUpdate = -1;
+  var lastWidth, lastHeight;
+  var fps = 0;
+  var isOptimal = false;
+  var frameTime = 0;
+
+  var frameFunction = function()
+  {
+    lastUpdate = getMasterTime();
+    var baseFrameTime = getTimer();
+    if ( $.width != lastWidth || $.height != lastHeight )
+    {
+      lastWidth = $.width;
+      lastHeight = $.height;
+
+      instance.evaluateAt( instance.entryPoint );
+      frameTime = getTimer() - baseFrameTime;
+      instance.iteration += 1;
+      maximizeInContainer();
+      return;
+    }
+
+    if ( Player.state === "playing" )
+    {
+      instance.evaluateAt( instance.entryPoint );
+      frameTime = getTimer() - baseFrameTime;
+      instance.iteration += 1;
+    }
+  };
+  
+  var maximizeInContainer = function()
+  {
+    var nominalWidth = rootBitmap.bitmapData.width;
+    var nominalHeight = rootBitmap.bitmapData.height;
+
+    var ratio = 1;
+    if ( !isOptimal ) {
+      ratio = Math.min( $.width / root.scaleX / nominalWidth, $.height / root.scaleY / nominalHeight );
+    }
+    rootBitmap.scaleX = ratio;
+    rootBitmap.scaleY = ratio;
+    
+    rootBitmap.x = Math.floor( ( $.width / root.scaleX - nominalWidth * ratio ) / 2 );
+    rootBitmap.y = Math.floor( ( $.height / root.scaleY - nominalHeight * ratio ) / 2 );
+  };
+
+  var getMasterTime = function() {
+    var lastTime = 0;
+    var baseTimer = 0;
+    var lastStatePlaying = false;
+    var lastOffsetTime = 0;
+    var frames = 0;
+
+    return function() {
+      if ( Player.time !== lastTime || ( !lastStatePlaying && ( Player.state === "playing" ) ) ) {
+        fps = frames * 1000 / ( lastOffsetTime - lastTime );
+        frames = 0;
+        lastTime = Player.time;
+        baseTimer = getTimer();
+        lastOffsetTime = lastTime;
+        lastStatePlaying = true;
+        return lastTime;
+      }
+
+      if ( Player.state !== "playing" ) {
+        lastStatePlaying = false;
+        return lastOffsetTime;
+      }
+
+      frames += 1;
+      lastOffsetTime = lastTime + ( getTimer() - baseTimer );
+      return lastOffsetTime;
+    };
+  }();
+
+  var presentationEvaluate = function( input, output ) {
+    output.time = lastUpdate;
+    output.stageWidth = lastWidth;
+    output.stageHeight = lastHeight;
+
+    var aspect = input( "aspectRatio" );
+    var maxHeight = input( "maxHeight" );
+    var height = Math.min( lastHeight, lastWidth / aspect );
+    if ( height > maxHeight ) {
+      isOptimal = false;
+      height = maxHeight;
+    }
+    else {
+      isOptimal = true;
+    }
+    output.width = Math.floor( height * aspect );
+    output.height = Math.floor( height );
+    Node.globalScale = height / input( "nominalHeight" );
+  };
+
+  var outputEvaluate = function( input ) {
+    var signal = input( "signal" );
+    if ( rootBitmapData !== signal ) {
+      rootBitmapData = signal;
+      rootBitmap.bitmapData = rootBitmapData;
+      rootBitmap.smoothing = true;
+    }
+  };
+
+  var outputDispose = function() {
+    rootBitmap.bitmapData = null;
+    rootBitmapData = null;
+  };
+
+  var dbgOutputEvaluate = function( input ) {
+    outputEvaluate( input );
+    var frameRate = $.hasOwnProperty( "frameRate" ) ? ( $.frameRate || 24 ) : 24;
+    var load = Math.round( frameTime * frameRate / 10 );
+    var str = "AkariX / biliScript - Onscreen (Load: " + load + "%)\n";
+    str += "Nominal FPS: " + frameRate + ", Current: " + Math.round( fps ) + "\n";
+    str += "Time usage: " + axUnpack( cast( "String", Debug.timeUsage ) ) + "\n";
+    str += input( "message" );
+
+    dbgOutput.visible = true;
+    dbgOutput.text = str;
+  };
+
+  Node.implement( "Presentation", {
+    input : [
+      { name : "aspectRatio", type : "Number", value : 16 / 9 },
+      { name : "maxHeight", type : "Number", value : 720 },
+      { name : "nominalHeight", type : "Number", value : 720 }
+    ],
+    output : [
+      { name : "time", type : "Number" },
+      { name : "width", type : "Number" },
+      { name : "height", type : "Number" }
+    ],
+    evaluate : presentationEvaluate,
+    dispose : function() {}
+  } );
+
+  Node.implement( "Output", {
+    input : [ { name : "signal", type : "Signal" } ],
+    output : [],
+    evaluate : outputEvaluate,
+    dispose : outputDispose
+  } );
+
+  Node.implement( "DebugOutput", {
+    input : [ { name : "signal", type : "Signal" }, { name : "message", type : "String", value : "" } ],
+    output : [],
+    evaluate : dbgOutputEvaluate,
+    dispose : outputDispose
+  } );
+
+  var requestInput = function( name ) {
+    var index = Debug.stack[ Debug.stack.length - 1 ];
+
+    var node = instance.nodes[ index ];
+    var type = Node.getImplementation( node.type );
+
+    if ( type.inputRev.hasOwnProperty( name ) ) {
+      if ( node.links.hasOwnProperty( name ) ) {
+        var link = node.links[ name ];
+        var target = instance.nodes[ link.target + 0 ];
+        var targetType = Node.getImplementation( target.type );
+
+        if ( targetType.stateful || ( target.iteration !== instance.iteration ) ) {
+          instance.evaluateAt( link.target );
+        }
+
+        // Stuff should always be copied, not modified. For performance reasons a clone outside nodes is infeasible.
+        // Implementations should take care of data properly,
+        // e.g. push calculated values onto new arrays, Array.concat, copyPixels onto their cached canvas.
+        var value = target.output[ link.targetOutput + "" ];
+        value = axAs( targetType.output[ targetType.outputRev[ link.targetOutput + "" ] + 0 ].type, value );
+        node.input[ name ] = axUnpack( cast( type.input[ type.inputRev[ name ] + 0 ].type, value ) );
+      }
+      else {
+        if ( !node.input.hasOwnProperty( name ) ) {
+          node.input[ name ] = axClone( type.input[ type.inputRev[ name ] + 0 ].value );
+        }
+        node.input[ name ] = axUnpack( node.input[ name ] );
+      }
+
+      Debug.local = node.input;
+      return node.input[ name ];
+    }
+    else {
+      Debug.throw( "@ Compositor.biliScript, Compositor.requestInput: Request of undefined input parameter: " + name );
+    }
+  };
+
+  var evaluateAt = function( index ) {
+    Debug.push( index );
+
+    var node = this.nodes[ index ];
+    var type = Node.getImplementation( node.type );
+
+    if( type ) {
+      if ( node.iteration !== this.iteration ) {
+        if ( type.stateful && type.iterationDispose ) {
+          type.iterationDispose( node.iCache );
+          node.iteration = this.iteration;
+        }
+      }
+      type.evaluate( requestInput, node.output, node.linkage, node.cache, node.iCache );
+      node.iteration = this.iteration;
+    }
+    else {
+      Debug.throw( "@ Compositor.biliScript, Compositor.evaluateAt: Evaluation of node type that no class implemented: " + node.type );
+    }
+
+    Debug.pop();
+  };
+
+  var initialize = function( tree ) {
+    var nodes = [];
+    var i = 0;
+    var j = 0;
+
+    if ( tree.nodes[ tree.entryPoint + 0 ].type !== "Output" && tree.nodes[ tree.entryPoint + 0 ].type !== "DebugOutput" ) {
+      Debug.throw( "@ Compositor.biliScript, Compositor.initialize: Entry point is not Output or DebugOutput." );
+    }
+
+    for ( i = 0; i < tree.nodes.length; i ++ ) {
+      nodes[ i ] = extend( tree.nodes[ i ], {
+        iteration : -1,
+        cache : {},
+        iCache : {},
+        output : {},
+        linkage : {}
+      } );
+    }
+
+    for ( i = 0; i < tree.nodes.length; i ++ ) {
+      foreach( nodes[ i + 0 ].links, function( inp, tar ) {
+        nodes[ tar.target + 0 ].linkage[ tar.targetOutput + "" ] = true;
+      });
+    }
+
+    this.nodes = nodes;
+    this.entryPoint = tree.entryPoint;
+    this.isActive = true;
+    this.iteration = 0;
+
+    root.addEventListener( "enterFrame", frameFunction );
+  };
+
+  var dispose = function() {
+    if ( !instance.isActive ) {
+      return;
+    }
+    root.removeEventListener( "enterFrame", frameFunction );
+
+    var i = 0;
+    var node = null;
+    var type = null;
+
+    for ( i = 0; i < instance.nodes.length; i ++ ) {
+      node = instance.nodes[ i ];
+      type = Node.getImplementation( node.type );
+
+      if ( type.dispose ) {
+        type.dispose( node.output, node.cache );
+      }
+    }
+    instance.nodes = null;
+    instance.isActive = false;
+    dbgOutput.visible = false;
+  };
+
+  instance = {
+    isActive : false,
+    initialize : initialize,
+    evaluateAt : evaluateAt,
+    dispose : dispose
+  };
+
+  return instance;
+}();
+
+// Export
+
+extend( AkariX, {
+  Compositor : Compositor
+});
+
+
+
+/* Impl for IKeyframesNode
+ */
+
+( function() {
+  var interpolateColor = function( a, b, t ) {
+    if ( !a ) {
+      var a = [ "rgb", 0, 0, 0, 0 ];
+    }
+    if ( !b ) {
+      var b = [ "rgb", 0, 0, 0, 0 ];
+    }
+
+    if ( a[ 0 ] === b[ 0 ] ) {
+      return [
+        a[ 0 ],
+        a[ 1 ] + ( b[ 1 ] - a[ 1 ] ) * t,
+        a[ 2 ] + ( b[ 2 ] - a[ 2 ] ) * t,
+        a[ 3 ] + ( b[ 3 ] - a[ 3 ] ) * t,
+        a[ 4 ] + ( b[ 4 ] - a[ 4 ] ) * t
+      ];
+    }
+    else {
+      var aRgb = Color.toRgb( a );
+      var bRgb = Color.toRgb( b );
+      return [
+        "rgb",
+        aRgb[ 1 ] + ( bRgb[ 1 ] - aRgb[ 1 ] ) * t,
+        aRgb[ 2 ] + ( bRgb[ 2 ] - aRgb[ 2 ] ) * t,
+        aRgb[ 3 ] + ( bRgb[ 3 ] - aRgb[ 3 ] ) * t,
+        aRgb[ 4 ] + ( bRgb[ 4 ] - aRgb[ 4 ] ) * t
+      ];
+    }
+  };
+
+  var distanceColor = function( a, b ) {
+    if ( !a ) {
+      var a = [ "rgb", 0, 0, 0, 0 ];
+    }
+    if ( !b ) {
+      var b = [ "rgb", 0, 0, 0, 0 ];
+    }
+
+    if ( a[ 0 ] === b[ 0 ] ) {
+      return Vector.length( Vector.subtract( a.slice( 1 ), b.slice( 1 ) ) );
+    }
+    else {
+      var aRgb = Color.toRgb( a );
+      var bRgb = Color.toRgb( b );
+      return Vector.length( Vector.subtract( aRgb.slice( 1 ), bRgb.slice( 1 ) ) );
+    }
+  };
+
+  var interpolateVector = function( a, b, t ) {
+    if ( !a ) {
+      var a = [];
+    }
+    if ( !b ) {
+      var b = [];
+    }
+
+    var i = 0;
+    var maxLength = a.length > b.length ? a.length : b.length;
+    var ret = [];
+
+    for ( i = 0; i < maxLength; i ++ ) {
+      ret[ i ] = ( a[ i ] || 0 ) + ( ( b[ i ] || 0 ) - ( a[ i ] || 0 ) ) * t;
+    }
+
+    return ret;
+  };
+
+  var distanceVector = function( a, b ) {
+    return Vector.length( Vector.subtract( a || [], b || [] ) );
+  };
+
+  var tmpM3D = $.createMatrix3D([]);
+  var tmpM3D2 = $.createMatrix3D([]);
+
+  var interpolateMatrix = function( a, b, t ) {
+    if ( !a && !b ) {
+      return null;
+    }
+    if ( !a ) {
+      var a = [ 1, 0, 0, 0, 1, 0 ];
+    }
+    if ( !b ) {
+      var a = [ 1, 0, 0, 0, 1, 0 ];
+    }
+
+    tmpM3D.rawData[ 0 ] = a[ 0 ];
+    tmpM3D.rawData[ 1 ] = a[ 1 ];
+    tmpM3D.rawData[ 3 ] = a[ 2 ];
+    tmpM3D.rawData[ 4 ] = a[ 3 ];
+    tmpM3D.rawData[ 5 ] = a[ 4 ];
+    tmpM3D.rawData[ 6 ] = a[ 5 ];
+    tmpM3D2.rawData[ 0 ] = a[ 0 ];
+    tmpM3D2.rawData[ 1 ] = a[ 1 ];
+    tmpM3D2.rawData[ 3 ] = a[ 2 ];
+    tmpM3D2.rawData[ 4 ] = a[ 3 ];
+    tmpM3D2.rawData[ 5 ] = a[ 4 ];
+    tmpM3D2.rawData[ 6 ] = a[ 5 ];
+
+    var tm = tmpM3D.constructor.interpolate( tmpM3D, tmpM3D2, t );
+    return [
+      tm.rawData[ 0 ], tm.rawData[ 1 ], tm.rawData[ 3 ],
+      tm.rawData[ 4 ], tm.rawData[ 5 ], tm.rawData[ 6 ]
+    ];
+  };
+
+  var distanceMatrix = function( a, b ) {
+    // Matrices shouldn't be interpolated linearly
+    // but for distance a fast approximate can be used
+    return Vector.length( Vector.subtract( a || [], b || [] ) );
+  };
+
+  var interpolateBrush = function( a, b, t ) {
+    if ( !a ) {
+      var a = { type : "none" };
+    }
+    if ( !b ) {
+      var b = { type : "none" };
+    }
+
+    var width = ( a.width || 0 ) + ( ( b.width || 0 ) - ( a.width || 0 ) ) * t;
+    var caps = t < 0.5 ? ( a.caps || b.caps ) : ( b.caps || a.caps );
+    var joints = t < 0.5 ? ( a.joints || b.joints ) : ( b.joints || a.joints );
+    var miterLimit = ( a.miterLimit || 3 ) + ( ( b.miterLimit || 3 ) - ( a.miterLimit || 3 ) ) * t;
+    var type = a.type;
+    if ( a.type === "none" ) {
+      type = b.type;
+    }
+    else if ( b.type === "none" ) {
+      type = a.type;
+    }
+    else {
+      type = t < 0.5 ? a.type : b.type;
+    }
+
+    var texture = t < 0.5 ? ( a.texture || b.texture ) : ( b.texture || a.texture );
+    var colors = null;
+    var i = 0;
+    var colorsA = a.colors || [[ "rgb", 0, 0, 0, 0 ]];
+    var colorsB = b.colors || [[ "rgb", 0, 0, 0, 0 ]];
+    colors = [];
+    if ( colorsA.length === colorsB.length ) {
+      for( i = 0; i < colorsA.length; i ++ ) {
+        colors.push( interpolateColor( colorsA[ i ], colorsB[ i ], t ) );
+      }
+    }
+    else {
+      var currentLength = Math.ceil( colorsA.length + ( colorsB.length - colorsA.length ) * t );
+      for ( i = 0; i < currentLength; i ++ ) {
+        if ( colorsA[ i ] && colorsB[ i ] ) {
+          colors.push( interpolateColor( colorsA[ i ], colorsB[ i ], t ) );
+        }
+        else {
+          if ( i === currentLength - 1 ) {
+            var nomT = ( currentLength - 1 - colorsA.length ) / ( colorsB.length - colorsA.length );
+            var nomT2 = ( currentLength - colorsA.length ) / ( colorsB.length - colorsA.length );
+            colors.push( interpolateColor( colors[ i - 1 ], colorsA[ i ] || colorsB[ i ], ( t - nomT ) / ( nomT2 - nomT ) ) );
+          }
+          else {
+            colors.push( colorsA[ i ] || colorsB[ i ] );
+          }
+        }
+      }
+    }
+
+    var ratios = null;
+    var i = 0;
+    var ratiosA = a.ratios || [ 0 ];
+    var ratiosB = b.ratios || [ 0 ];
+    ratios = [];
+    if ( ratiosA.length === ratiosB.length ) {
+      for( i = 0; i < ratiosA.length; i ++ ) {
+        ratios.push( ratiosA[ i ] + ( ratiosB[ i ] - ratiosA[ i ] ) * t );
+      }
+    }
+    else {
+      var currentLength = Math.ceil( ratiosA.length + ( ratiosB.length - ratiosA.length ) * t );
+      for ( i = 0; i < currentLength; i ++ ) {
+        if ( ratiosA[ i ] && ratiosB[ i ] ) {
+          ratios.push( ratiosA[ i ] + ( ratiosB[ i ] - ratiosA[ i ] ) * t );
+        }
+        else {
+          if ( i === currentLength - 1 ) {
+            var nomT = ( currentLength - 1 - ratiosA.length ) / ( ratiosB.length - ratiosA.length );
+            var nomT2 = ( currentLength - ratiosA.length ) / ( ratiosB.length - ratiosA.length );
+            ratios.push( 1 + ( ( ratiosA[ i ] || ratiosB[ i ] ) - 1 ) * ( t - nomT ) / ( nomT2 - nomT ) );
+          }
+          else {
+            ratios.push( ratiosA[ i ] || ratiosB[ i ] );
+          }
+        }
+      }
+    }
+
+    var spreadMethod = t < 0.5 ? ( a.spreadMethod || b.spreadMethod ) : ( b.spreadMethod || a.spreadMethod );
+    var matrix = interpolateMatrix( a.matrix, b.matrix, t );
+    var polar = t < 0.5 ? a.polar : b.polar;
+    var focalPointRatio = ( a.focalPointRatio || 0 ) + ( ( b.focalPointRatio || 0 ) - ( a.focalPointRatio || 0 ) ) * t;
+
+    return {
+      width : width,
+      caps : caps,
+      joints : joints,
+      miterLimit : miterLimit,
+      type : type,
+      texture : texture,
+      colors : colors,
+      ratios : ratios,
+      spreadMethod : spreadMethod,
+      matrix : matrix,
+      polar : polar,
+      focalPointRatio : focalPointRatio
+    };
+  };
+
+  var distanceBrush = function( a, b ) {
+    var sum = 0;
+    // Really arbitrary weights here... I would say better not do spacial interpolation on brushes.
+    sum += 4 * Math.abs( ( a.width || 0 ) - ( b.width || 0 ) );
+    sum += 0.5 * Math.abs( ( a.miterLimit || 0 ) - ( b.miterLimit || 0 ) );
+    sum += distanceMatrix( a.matrix, b.matrix );
+    if ( a.caps !== b.caps ) {
+      sum += 10;
+    }
+    if ( a.joints !== b.joints ) {
+      sum += 10;
+    }
+    if ( a.colors && b.colors ) {
+      if ( a.colors.length !== b.colors.length ) {
+        sum += 8 * Math.abs( a.colors.length - b.colors.length );
+      }
+      else {
+        var i = 0;
+        for ( i = 0; i < a.colors.length; i ++ ) {
+          sum += distanceColor( a.colors[ i ], b.colors[ i ] );
+        }
+      }
+    }
+    else {
+      sum *= 2;
+    }
+    if ( a.type !== b.type ) {
+      sum *= 10;
+    }
+    if ( a.texture !== b.texture ) {
+      sum *= 2;
+    }
+    if ( a.polar !== b.polar ) {
+      sum *= 2;
+    }
+    if ( a.spreadMethod !== b.spreadMethod ) {
+      sum *= 2;
+    }
+
+    return sum;
+  };
+
+  var interpolateTransform = function( a, b, t ) {
+    if ( !a ) {
+      var a = {};
+    }
+    if ( !b ) {
+      var b = {};
+    }
+
+    var position = interpolateVector( a.position, b.position, t );
+    var anchor = interpolateVector( a.anchor, b.anchor, t );
+    var rotation = interpolateVector( a.rotation, b.rotation, t );
+    var scale = interpolateVector( a.scale, b.scale, t );
+
+    return {
+      position : position,
+      anchor : anchor,
+      rotation : rotation,
+      scale : scale
+    };
+  };
+
+  var distanceTransform = function( a, b ) {
+    if ( !a ) {
+      var a = {};
+    }
+    if ( !b ) {
+      var b = {};
+    }
+
+    var sum = distanceVector( a.position, b.position );
+    sum += distanceVector( a.anchor, b.anchor );
+    sum += distanceVector( a.rotation, b.rotation );
+    sum += distanceVector( a.scale, b.scale );
+
+    return sum;
+  };
+
+  var growthSpline = function( s, t ) {
+    var center = [];
+    var i = 0;
+    var j = 0;
+    var s = 0;
+
+    for ( i = 0; i < s.length; i ++ ) {
+      center = Vector.add.apply( Vector, s[ i + 0 ].concat( center ) );
+      s += 1;
+    }
+
+    center = Vector.scale( center, 1 / s );
+    var ret = [];
+    for ( i = 0; i < s.length; i ++ ) {
+      ret.push([]);
+      for ( j = 0; j < s[ i + 0 ].length; j ++ ) {
+        ret[ i + 0 ].push( Vector.add( center, Vector.scale( Vector.subtract( s[ i + 0 ][ j + 0 ], center ), t ) ) );
+      }
+    }
+
+    return ret;
+  };
+
+  var bezierElevate = function( cps, target ) {
+    var current = cps;
+    var i = 0;
+    while ( current.length < target ) {
+      var result = [ current[ 0 ] ];
+      for ( i = 1; i < current.length; i ++ ) {
+        result.push( interpolateVector( current[ i - 1 ], current[ i + 0 ], i / current.length ) );
+      }
+      result.push( current[ current.length - 1 ] );
+
+      current = result;
+    }
+
+    return current;
+  };
+
+  var splineSplit = function( s, target ) {
+    var current = s;
+    var i = 0;
+    var j = 0;
+    var t = 0;
+    var lm = 0;
+    var lmi = 0;
+    var tv = null;
+
+    while ( current.length < target ) {
+      var result = [];
+      lm = 0;
+      lmi = 0;
+      for ( i = 0; i < current.length; i ++ ) {
+        t = 0;
+        tv = current[ i + 0 ][ 0 ];
+        for ( j = 1; j < current[ i + 0 ].length; j ++ ) {
+          t += Vector.length( Vector.subtract( current[ i + 0 ][ j + 0 ], tv ) );
+          tv = current[ i + 0 ][ j + 0 ];
+        }
+        if ( t > lm ) {
+          lm = t;
+          lmi = i;
+        }
+      }
+
+      var lSeg = [];
+      var rSeg = [];
+      ( Bezier( current[ lmi + 0 ] ) ).split( lSeg, rSeg );
+
+      for ( i = 0; i < lmi; i ++ ) {
+        result.push( current[ i + 0 ] );
+      }
+      result.push( lSeg );
+      result.push( rSeg );
+      for ( i = lmi + 1; i < current.length; i ++ ) {
+        result.push( current[ i + 0 ] );
+      }
+
+      current = result;
+    }
+
+    return current;
+  };
+
+  var interpolateSpline = function( a, b, t ) {
+    // If one of the splines is null and not the other: Perform a growth animation from center
+    if ( !a || a.length === 0 ) {
+      if ( !b || b.length === 0 ) {
+        return [];
+      }
+      else {
+        return growthSpline( b, t );
+      }
+    }
+    else {
+      if ( !b || b.length === 0 ) {
+        return growthSpline( a, 1 - t );
+      }
+    }
+
+    var i = 0;
+    var j = 0;
+    if ( a.length < b.length ) {
+      a = splineSplit( a, b.length );
+    }
+    else if ( a.length > b.length ) {
+      b = splineSplit( b, a.length );
+    }
+
+    for ( i = 0; i < a.length; i ++ ) {
+      if ( a[ i + 0 ].length < b[ i + 0 ].length ) {
+        a[ i + 0 ] = bezierElevate( a[ i + 0 ], b[ i + 0 ].length );
+      }
+      else if ( a[ i + 0 ].length > b[ i + 0 ].length ) {
+        b[ i + 0 ] = bezierElevate( b[ i + 0 ], a[ i + 0 ].length );
+      }
+    }
+
+    var ret = [];
+    for ( i = 0; i < a.length; i ++ ) {
+      ret.push([]);
+      for ( j = 0; j < a[ i + 0 ].length; j ++ ) {
+        ret[ i + 0 ].push( interpolateVector( a[ i + 0 ][ j + 0 ], b[ i + 0 ][ j + 0 ], t ) );
+      }
+    }
+
+    return ret;
+  };
+
+  var distanceSpline = function( a, b ) {
+    if ( !a && !b ) {
+      return 0;
+    }
+
+    if ( !a ) {
+      var a = [ [ b[ 0 ][ 0 ] ] ];
+    }
+    if ( !b ) {
+      var b = [ [ a[ 0 ][ 0 ] ] ];
+    }
+
+    var i = 0;
+    var j = 0;
+    if ( a.length < b.length ) {
+      a = splineSplit( a, b.length );
+    }
+    else if ( a.length > b.length ) {
+      b = splineSplit( b, a.length );
+    }
+
+    for ( i = 0; i < a.length; i ++ ) {
+      if ( a[ i + 0 ].length < b[ i + 0 ].length ) {
+        a[ i + 0 ] = bezierElevate( a[ i + 0 ], b[ i + 0 ].length );
+      }
+      else if ( a[ i + 0 ].length > b[ i + 0 ].length ) {
+        b[ i + 0 ] = bezierElevate( b[ i + 0 ], a[ i + 0 ].length );
+      }
+    }
+
+    var ret = 0;
+    for ( i = 0; i < a.length; i ++ ) {
+      for ( j = 0; j < a[ i + 0 ].length; j ++ ) {
+        ret += distanceVector( a[ i + 0 ][ j + 0 ], b[ i + 0 ][ j + 0 ] );
+      }
+    }
+
+    return ret;
+  };
+
+  var interpolatePrimitive = function( a, b, t ) {
+    if ( !a || !b || a.type === "Signal" || b.type === "Signal" ) {
+      return t < 0.5 ? ( a || b ) : ( b || a );
+    }
+
+    var splineA = null;
+    var splineB = null;
+
+    if ( a.type === "Spline" ) {
+      splineA = a.vertices ? a.vertices : null;
+    }
+    else {
+      if ( a.vertices && a.vertices.length > 0 ) {
+        splineA = [[ a.vertices[ 0 ] ]];
+        var i = 0;
+        for ( i = 1; i < a.vertices; i ++ ) {
+          splineA.push([ a.vertices[ i - 1 ], a.vertices[ i ] ]);
+        }
+      }
+    }
+
+    if ( b.type === "Spline" ) {
+      splineB = b.vertices ? b.vertices : null;
+    }
+    else {
+      if ( b.vertices && b.vertices.length > 0 ) {
+        splineB = [[ b.vertices[ 0 ] ]];
+        var i = 0;
+        for ( i = 1; i < b.vertices; i ++ ) {
+          splineA.push([ b.vertices[ i - 1 ], b.vertices[ i ] ]);
+        }
+      }
+    }
+
+    var vertices = interpolateSpline( splineA, splineB, t );
+    var blend = t < 0.5 ? ( a.blend || b.blend ) : ( b.blend || a.blend );
+    var fill = interpolateBrush( a.fill, b.fill, t );
+    var stroke = interpolateBrush( a.stroke, b.stroke, t );
+    var transform = interpolateTransform( a.transform, b.transform, t );
+
+    return {
+      type : "Spline",
+      blend : blend,
+      vertices : vertices,
+      fill : fill,
+      stroke : stroke,
+      transform : transform
+    };
+  };
+
+  var distancePrimitive = function( a, b ) {
+    if ( !a || !b || a.type === "Signal" || b.type === "Signal" ) {
+      return 0;
+    }
+
+    var sum = 0;
+    if ( a.type === "Spline" && b.type === "Spline" ) {
+      sum += distanceSpline( a.vertices, b.vertices );
+    }
+    sum += distanceTransform( a.transform, b.transform );
+    sum += distanceBrush( a.fill, b.fill );
+    sum += distanceBrush( a.stroke, b.stroke );
+
+    if ( a.type !== b.type ) {
+      sum *= 4;
+    }
+    if ( a.blend !== b.blend ) {
+      sum *= 2;
+    }
+
+    return sum;
+  };
+
+  var evaluate = function( input, output, linkage, cache ) {
+    var type = input( "as" );
+    var cached = input( "cacheSpline" );
+    var keyframes = null;
+    if ( cached ) {
+      keyframes = cache.keyframes || input( "keyframes" );
+      cache.keyframes = keyframes;
+    }
+    else {
+      keyframes = input( "keyframes" );
+    }
+
+    var interpolationFunc = null;
+    var distanceFunc = null;
+
+    switch( type ) {
+      case "Color":
+        interpolationFunc = interpolateColor;
+        distanceFunc = distanceColor;
+        break;
+      case "Brush":
+        interpolationFunc = interpolateBrush;
+        distanceFunc = distanceBrush;
+        break;
+      case "Vector":
+        interpolationFunc = interpolateVector;
+        distanceFunc = distanceVector;
+        break;
+      case "Transform":
+        interpolationFunc = interpolateTransform;
+        distanceFunc = distanceTransform;
+        break;
+      case "Spline":
+        interpolationFunc = interpolateSpline;
+        distanceFunc = distanceSpline;
+        break;
+      case "Primitive":
+        interpolationFunc = interpolatePrimitive;
+        distanceFunc = distancePrimitive;
+        break;
+    }
+
+    var time = input( "time" );
+    var pLine = null;
+    if ( cached ) {
+      if ( cache.lMin && cache.lMax ) {
+        if ( time >= cache.lMin && time < cache.lMax ) {
+          pLine = cache.pLine;
+        }
+      }
+    }
+
+    if ( !pLine ) {
+      var i = 0;
+      var j = 0;
+      var lMin = 0;
+      var lMax = 0;
+      var currentSegment = null;
+
+      // Have to do sanity checks on our own since Compositor handles only the top level type of objects,
+      // and curves that are not a function of time are allowed as Splines.
+      for ( i = 0; i < keyframes.length; i ++ ) {
+        if ( keyframes[ i + 0 ].length > 0 ) {
+          lMin = keyframes[ i + 0 ][ 0 ][ 0 ];
+          // now lMax is still the last point of the last segment.
+          // This rule enforces that segments don't overlap.
+          if ( lMin < lMax ) {
+            Debug.throw( "@ Impl.Animation.biliScript, IKeyframesNode.evaluate: Spline is not a function of time." );
+          }
+          if ( lMax <= time && time < lMin ) {
+            currentSegment = [ keyframes[ i - 1 ][ keyframes[ i - 1 ].length - 1 ], keyframes[ i + 0 ][ 0 ] ];
+            break;
+          }
+
+          lMax = keyframes[ i + 0 ][ keyframes[ i + 0 ].length - 1 ][ 0 ];
+          for ( j = 0; j < keyframes[ i + 0 ].length; j ++ ) {
+            if ( keyframes[ i + 0 ][ j + 0 ] < lMin || keyframes[ i + 0 ][ j + 0 ] > lMax ) {
+              Debug.throw( "@ Impl.Animation.biliScript, IKeyframesNode.evaluate: Spline is not a function of time." );
+            }
+          }
+
+          if ( lMin <= time && time < lMax ) {
+            currentSegment = keyframes[ i + 0 ];
+            break;
+          }
+        }
+      }
+
+      if ( !currentSegment ) {
+        if ( time < keyframes[ 0 ][ 0 ][ 0 ] ) {
+          pLine = [ keyframes[ 0 ][ 0 ] ];
+          lMin = (0).constructor.MIN_VALUE;
+          lMax = pLine[ 0 ][ 0 ];
+        }
+        else if ( time >= lMax ) {
+          pLine = [ keyframes[ keyframes.length - 1 ][ keyframes[ keyframes.length - 1 ].length - 1 ] ];
+          lMin = pLine[ 0 ][ 0 ];
+          lMax = (0).constructor.MAX_VALUE;
+        }
+      }
+      else {
+        // Limit precision in time domain to frame rate. Anything lower is probably nonsense
+        var frameRate = $.hasOwnProperty( "frameRate" ) ? ( $.frameRate || 24 ) : 24;
+        var bez = Bezier( currentSegment );
+        bez.interpolation[ 1 ] = interpolationFunc;
+        bez.distance[ 1 ] = distanceFunc;
+        pLine = bez.toPolyline();
+      }
+
+      if ( cached ) {
+        cache.pLine = pLine;
+        cache.lMin = lMin;
+        cache.lMax = lMax;
+      }
+    }
+
+    if ( pLine.length === 1 ) {
+      output.value = pLine[ 0 ][ 1 ];
+    }
+    else {
+      // binary search for the corresponding segment
+      var start = 0;
+      var end = pLine.length - 2;
+      var loopFlag = start < end;
+
+      do {
+        i = Math.floor( ( start + end ) / 2 );
+
+        if ( pLine[ i ][ 0 ] > time ) {
+          end = i;
+        }
+        else if ( pLine[ i + 1 ][ 0 ] < time ) {
+          if ( i === end - 1 ) {
+            i ++;
+            loopFlag = false;
+          }
+          else {
+            start = i;
+          }
+        }
+        else {
+          loopFlag = false;
+        }
+
+      } while ( loopFlag );
+
+      var p1 = pLine[ i ];
+      var p2 = pLine[ i + 1 ];
+      var t = ( p2[ 0 ] === p1[ 0 ] ) ? 1 : ( time - p1[ 0 ] ) / ( p2[ 0 ] - p1[ 0 ] );
+
+      if ( interpolationFunc ) {
+        output.value = axAs( type, interpolationFunc( p1[ 1 ], p2[ 1 ], t ) );
+      }
+      else {
+        output.value = p1[ 1 ] + ( p2[ 1 ] - p1[ 1 ] ) * t;
+      }
+    }
+  };
+
+  Node.implement( "Keyframes", {
+    input : [
+      { name : "keyframes", type : "Spline", value : [] },
+      { name : "as", type : "String", value : "Number" },
+      { name : "time", type : "Number", value : 0 },
+      { name : "cacheSpline", type : "Boolean", value : false }
+    ],
+    output : [
+      { name : "value", type : "Any" }
+    ],
+    evaluate : evaluate
+  } );
+})();
+
+
+
+/* Impl for ICheckerNode
+ */
+
+( function() {
+  var evaluate = function( input, output ) {
+    var d = input( "base" );
+    var width = input( "width" );
+    var height = input( "height" );
+    var frequencyX = input( "frequencyX" );
+    var frequencyY = input( "frequencyY" );
+    var color1 = input( "color1" );
+    var color2 = input( "color2" );
+
+    if ( color1[ 1 ] > 0 ) {
+      d = d.concat({
+        type : "Polyline",
+        vertices : [ [ 0, 0 ], [ width, 0 ], [ width, height ], [ 0, height ] ],
+        fill : {
+          type : "flat",
+          colors : [ color1 ]
+        },
+        stroke : {
+          type : "none"
+        }
+      });
+    }
+
+    var vertices = [[ 0, 0 ]];
+
+    var i = 0;
+    for ( i = 0; i <= frequencyY; i ++ ) {
+      if ( i % 2 === 0 ) {
+        vertices.push([ 0, height * i / frequencyY ]);
+        vertices.push([ width, height * i / frequencyY ]);
+      }
+      else {
+        vertices.push([ width, height * i / frequencyY ]);
+        vertices.push([ 0, height * i / frequencyY ]);
+      }
+    }
+    if ( frequencyY % 2 === 0 ) {
+      vertices.push([ width, 0 ]);
+    }
+    vertices.push([ 0, 0 ]);
+    
+    for ( i = 0; i <= frequencyX; i ++ ) {
+      if ( i % 2 === 0 ) {
+        vertices.push([ width * i / frequencyX, 0 ]);
+        vertices.push([ width * i / frequencyX, height ]);
+      }
+      else {
+        vertices.push([ width * i / frequencyX, height ]);
+        vertices.push([ width * i / frequencyX, 0 ]);
+      }
+    }
+    if ( frequencyX % 2 === 0 ) {
+      vertices.push([ 0, height ]);
+    }
+    vertices.push([ 0, 0 ]);
+
+    d = d.concat({
+      type : "Polyline",
+      vertices : vertices,
+      fill : {
+        type : "flat",
+        colors : [ color2 ]
+      },
+      stroke : {
+        type : "none"
+      }
+    });
+    output.output = d;
+  };
+
+  Node.implement( "Checker", {
+    input : [
+      { name : "width", type : "Number", value : 100 },
+      { name : "height", type : "Number", value : 100 },
+      { name : "frequencyX", type : "Number", value : 16 },
+      { name : "frequencyY", type : "Number", value : 16 },
+      { name : "color1", type : "Color", value : [ "rgb", 1, 1, 1, 1 ] },
+      { name : "color2", type : "Color", value : [ "rgb", 1, 0, 0, 0 ] },
+      { name : "base", type : "Drawable", value : [] }
+    ],
+    output : [ { name : "output", type : "Drawable" } ],
+    evaluate : evaluate
+  } );
+})();
+
+/* Impl for IPrimitiveNode
+ */
+
+( function() {
+  var evaluate = function( input, output ) {
+    var d = input( "base" );
+
+    output.output = d.concat({
+      type : input( "type" ),
+      blend : input( "blend" ),
+      vertices : input( "vertices" ),
+      fill : input( "fill" ),
+      stroke : input( "stroke" ),
+      transform : input( "transform" )
+    });
+  };
+
+  Node.implement( "Primitive", {
+    input : [
+      { name : "base", type : "Drawable", value : [] },
+      { name : "type", type : "String", value : "Spline" },
+      { name : "blend", type : "String", value : "normal" },
+      { name : "vertices", type : "Vector", value : [] },
+      { name : "fill", type : "Brush", value : { type : "none" } },
+      { name : "stroke", type : "Brush", value : { type : "none" } },
+      { name : "transform", type : "Transform", value : {} }
+    ],
+    output : [ { name : "output", type : "Drawable" } ],
+    evaluate : evaluate
+  } );
+})();
+
+/* Impl for IBrushNode
+ */
+
+( function() {
+  var evaluate = function( input, output ) {
+    output.output = {
+      width : input( "width" ),
+      caps : input( "caps" ),
+      joint : input( "joint" ),
+      miterLimit : input( "miterLimit" ),
+      type : input( "type" ),
+      texture : input( "texture" ),
+      colors : input( "colors" ),
+      ratios : input( "ratios" ),
+      spreadMethod : input( "spreadMethod" ),
+      matrix : input( "matrix" ),
+      polar : input( "polar" ),
+      focalPointRatio : input( "focalPointRatio" )
+    };
+  };
+
+  Node.implement( "Brush", {
+    input : [
+      { name : "width", type : "Number", value : 0 },
+      { name : "caps", type : "String", value : "round" },
+      { name : "joint", type : "String", value : "round" },
+      { name : "miterLimit", type : "Number", value : 3 },
+      { name : "type", type : "String", value : "none" },
+      { name : "texture", type : "Signal", value : null },
+      { name : "colors", type : "Vector", value : [] },
+      { name : "ratios", type : "Vector", value : [] },
+      { name : "spreadMethod", type : "String", value : "pad" },
+      { name : "matrix", type : "Matrix", value : [ 1, 0, 0, 0, 1, 0 ] },
+      { name : "polar", type : "Boolean", value : false },
+      { name : "focalPointRatio", type : "Number", value : 0 }
+    ],
+    output : [ { name : "output", type : "Brush" } ],
+    evaluate : evaluate
+  } );
+})();
+
+/* Impl for ITransformNode
+ */
+
+( function() {
+  var evaluate = function( input, output ) {
+    output.output = {
+      anchor : input( "anchor" ),
+      rotation : input( "rotation" ),
+      scale : input( "scale" ),
+      position : input( "position" )
+    };
+  };
+
+  Node.implement( "Transform", {
+    input : [
+      { name : "anchor", type : "Vector", value : [ 0, 0, 0 ] },
+      { name : "rotation", type : "Vector", value : [ 0, 0, 0 ] },
+      { name : "scale", type : "Vector", value : [ 1, 1, 1 ] },
+      { name : "position", type : "Vector", value : [ 0, 0, 0 ] }
+    ],
+    output : [ { name : "output", type : "Transform" } ],
+    evaluate : evaluate
+  } );
+})();
+
+
+/* Impl for IChannelSplitNode
+ */
+
+( function() {
+  var originPoint = $.createPoint( 0, 0 );
+
+  var evaluate = function( input, output, linkage, cache ) {
+    var signal = input( "signal" );
+    if ( !signal ) {
+      Debug.throw( "@ Impl.Filter.biliScript, IChannelSplitNode.evaluate: No input signal." );
+      return;
+    }
+
+    signal.lock();
+    if ( linkage.alpha ) {
+      if ( !output.alpha || output.alpha.width !== signal.width || output.alpha.height !== signal.height ) {
+        if ( output.alpha ) {
+          output.alpha.dispose();
+        }
+        output.alpha = Bitmap.createBitmapData( signal.width, signal.height, true, 0 );
+      }
+      output.alpha.lock();
+      output.alpha.copyChannel( signal, signal.rect, originPoint, 8, 8 );
+      output.alpha.unlock();
+    }
+
+    if ( linkage.red ) {
+      if ( !output.red || output.red.width !== signal.width || output.red.height !== signal.height ) {
+        if ( output.red ) {
+          output.red.dispose();
+        }
+        output.red = Bitmap.createBitmapData( signal.width, signal.height, true, 0 );
+      }
+      output.red.lock();
+      output.red.copyChannel( signal, signal.rect, originPoint, 1, 1 );
+      output.red.unlock();
+    }
+
+    if ( linkage.green ) {
+      if ( !output.green || output.green.width !== signal.width || output.green.height !== signal.height ) {
+        if ( output.green ) {
+          output.green.dispose();
+        }
+        output.green = Bitmap.createBitmapData( signal.width, signal.height, true, 0 );
+      }
+      output.green.lock();
+      output.green.copyChannel( signal, signal.rect, originPoint, 2, 2 );
+      output.green.unlock();
+    }
+
+    if ( linkage.blue ) {
+      if ( !output.blue || output.blue.width !== signal.width || output.blue.height !== signal.height ) {
+        if ( output.blue ) {
+          output.blue.dispose();
+        }
+        output.blue = Bitmap.createBitmapData( signal.width, signal.height, true, 0 );
+      }
+      output.blue.lock();
+      output.blue.copyChannel( signal, signal.rect, originPoint, 4, 4 );
+      output.blue.unlock();
+    }
+    signal.unlock();
+  };
+
+  Node.implement( "ChannelSplit", {
+    input : [
+      { name : "signal", type : "Signal" }
+    ],
+    output : [
+      { name : "alpha", type : "Signal" },
+      { name : "red", type : "Signal" },
+      { name : "green", type : "Signal" },
+      { name : "blue", type : "Signal" }
+    ],
+    evaluate : evaluate
+  } );
+})();
+
+/* Impl for IChannelMergeNode
+ */
+
+( function() {
+  var originPoint = $.createPoint( 0, 0 );
+
+  var evaluate = function( input, output, linkage, cache ) {
+    var base = input( "base" );
+    var alpha = input( "alpha" );
+    var red = input( "red" );
+    var green = input( "green" );
+    var blue = input( "blue" );
+
+    if ( !base && !alpha && !red && !green && !blue ) {
+      Debug.throw( "@ Impl.Filter.biliScript, IChannelMergeNode.evaluate: No input signal." );
+      return;
+    }
+
+    var width = null;
+    var height = null;
+
+    if ( base ) {
+      width = base.width;
+      height = base.height;
+    }
+
+    if ( alpha ) {
+      if ( width ) {
+        if ( width !== alpha.width || height !== alpha.height ) {
+          Debug.throw( "@ Impl.Filter.biliScript, IChannelMergeNode.evaluate: Input signal dimensions mismatch." );
+          return;
+        }
+      }
+      else {
+        width = alpha.width;
+        height = alpha.height;
+      }
+    }
+
+    if ( red ) {
+      if ( width ) {
+        if ( width !== red.width || height !== red.height ) {
+          Debug.throw( "@ Impl.Filter.biliScript, IChannelMergeNode.evaluate: Input signal dimensions mismatch." );
+          return;
+        }
+      }
+      else {
+        width = red.width;
+        height = red.height;
+      }
+    }
+
+    if ( green ) {
+      if ( width ) {
+        if ( width !== green.width || height !== green.height ) {
+          Debug.throw( "@ Impl.Filter.biliScript, IChannelMergeNode.evaluate: Input signal dimensions mismatch." );
+          return;
+        }
+      }
+      else {
+        width = green.width;
+        height = green.height;
+      }
+    }
+
+    if ( blue ) {
+      if ( width ) {
+        if ( width !== blue.width || height !== blue.height ) {
+          Debug.throw( "@ Impl.Filter.biliScript, IChannelMergeNode.evaluate: Input signal dimensions mismatch." );
+          return;
+        }
+      }
+      else {
+        width = blue.width;
+        height = blue.height;
+      }
+    }
+
+    if ( !output.output || output.output.width !== width || output.output.height !== height ) {
+      if ( output.output ) {
+        output.output.dispose();
+      }
+      output.output = Bitmap.createBitmapData( width, height, true, 0 );
+    }
+
+    var surface = output.output;
+    surface.lock();
+
+    if ( base ) {
+      base.lock();
+      surface.copyPixels( base, base.rect, originPoint, null, null, false );
+      base.unlock();
+    }
+
+    if ( alpha ) {
+      alpha.lock();
+      surface.copyChannel( alpha, alpha.rect, originPoint, 8, 8 );
+      alpha.unlock();
+    }
+
+    if ( red ) {
+      red.lock();
+      surface.copyChannel( red, red.rect, originPoint, 1, 1 );
+      red.unlock();
+    }
+
+    if ( green ) {
+      green.lock();
+      surface.copyChannel( green, green.rect, originPoint, 2, 2 );
+      green.unlock();
+    }
+
+    if ( blue ) {
+      blue.lock();
+      surface.copyChannel( blue, blue.rect, originPoint, 4, 4 );
+      blue.unlock();
+    }
+
+    surface.unlock();
+  };
+
+  Node.implement( "ChannelMerge", {
+    input : [
+      { name : "base", type : "Signal" },
+      { name : "alpha", type : "Signal" },
+      { name : "red", type : "Signal" },
+      { name : "green", type : "Signal" },
+      { name : "blue", type : "Signal" }
+    ],
+    output : [
+      { name : "signal", type : "Signal" }
+    ],
+    evaluate : evaluate
+  } );
+})();
+
+/* Impl for IMergeNode
+ */
+
+( function() {
+  var originPoint = $.createPoint( 0, 0 );
+
+  var evaluate = function( input, output, linkage, cache ) {
+    var signalA = input( "signalA" );
+    var signalB = input( "signalB" );
+    if ( !signalA || !signalB ) {
+      Debug.throw( "@ Impl.Filter.biliScript, IMergeNode.evaluate: No input signal." );
+      return;
+    }
+
+    if ( signalA.width !== signalB.width || signalA.height !== signalB.height ) {
+      Debug.throw( "@ Impl.Filter.biliScript, IMergeNode.evaluate: Input signal dimensions mismatch." );
+      return;
+    }
+
+    var blend = input( "blend" );
+    var alpha = input( "alpha" );
+
+    if ( !output.output || output.output.width !== signalA.width || output.output.height !== signalA.height ) {
+      if ( output.output ) {
+        output.output.dispose();
+      }
+      output.output = Bitmap.createBitmapData( signalA.width, signalA.height, true, 0 );
+    }
+
+    var surface = output.output;
+    surface.lock();
+
+    if ( blend === "none" ) {
+      signalB.lock();
+      surface.copyPixels( signalB, signalB.rect, originPoint, null, null, false );
+      signalB.unlock();
+    }
+    else if ( blend === "normal" && alpha === 1 ) {
+      signalA.lock();
+      signalB.lock();
+      surface.copyPixels( signalA, signalA.rect, originPoint, null, null, false );
+      surface.copyPixels( signalB, signalB.rect, originPoint, null, null, true );
+      signalA.unlock();
+      signalB.unlock();
+    }
+    else {
+      signalA.lock();
+      signalB.lock();
+      surface.copyPixels( signalA, signalA.rect, originPoint, null, null, false );
+      if ( alpha === 1 ) {
+        surface.draw( signalB, null, null, blend, null, false );
+      }
+      else {
+        surface.draw( signalB, null, $.createColorTransform( 1, 1, 1, alpha, 0, 0, 0, 0 ), blend, null, false );
+      }
+      signalA.unlock();
+      signalB.unlock();
+    }
+
+    surface.unlock();
+  };
+
+  Node.implement( "Merge", {
+    input : [
+      { name : "signalA", type : "Signal" },
+      { name : "signalB", type : "Signal" },
+      { name : "blend", type : "String", value : "none" },
+      { name : "alpha", type : "Number", value : 1 }
+    ],
+    output : [ { name : "output", type : "Signal" } ],
+    evaluate : evaluate
+  } );
+})();
+
+/* Impl for IThresholdNode
+ */
+
+( function() {
+  var originPoint = $.createPoint( 0, 0 );
+
+  var evaluate = function( input, output, linkage, cache ) {
+    var signal = input( "signal" );
+    if ( !signal ) {
+      Debug.throw( "@ Impl.Filter.biliScript, IThresholdNode.evaluate: No input signal." );
+      return;
+    }
+
+    var threshold = Color.toRgb( input( "threshold" ) );
+    var inverse = input( "inverse" );
+    var separate = input( "separate" );
+
+    if ( !output.output || output.output.width !== signal.width || output.output.height !== signal.height ) {
+      if ( output.output ) {
+        output.output.dispose();
+      }
+      output.output = Bitmap.createBitmapData( signal.width, signal.height, true, 0 );
+    }
+    if ( !cache.auxSurface || cache.auxSurface.width !== signal.width || cache.auxSurface.height !== signal.height ) {
+      if ( cache.auxSurface ) {
+        cache.auxSurface.dispose();
+      }
+      cache.auxSurface = Bitmap.createBitmapData( signal.width, signal.height, true, 0 );
+    }
+
+    var surface = output.output;
+    surface.lock();
+    signal.lock();
+    var inOriginal = true;
+    var inAux = false;
+    var hwC = Color.toHardware( threshold );
+
+    if ( separate ) {
+      auxSurface.lock();
+      if ( inverse || threshold[ 1 ] > 0 ) {
+        auxSurface.threshold( signal, signal.rect, originPoint, "<", hwC, 0, 0xFF000000, true );
+        surface.copyChannel( auxSurface, auxSurface.rect, originPoint, 8, 8 );
+      }
+      else {
+        surface.copyChannel( signal, signal.rect, originPoint, 8, 8 );
+      }
+      if ( inverse || threshold[ 2 ] > 0 ) {
+        auxSurface.threshold( signal, signal.rect, originPoint, "<", hwC, 0, 0x00FF0000, true );
+        surface.copyChannel( auxSurface, auxSurface.rect, originPoint, 1, 1 );
+      }
+      else {
+        surface.copyChannel( signal, signal.rect, originPoint, 1, 1 );
+      }
+      if ( inverse || threshold[ 3 ] > 0 ) {
+        auxSurface.threshold( signal, signal.rect, originPoint, "<", hwC, 0, 0x0000FF00, true );
+        surface.copyChannel( auxSurface, auxSurface.rect, originPoint, 2, 2 );
+      }
+      else {
+        surface.copyChannel( signal, signal.rect, originPoint, 2, 2 );
+      }
+      if ( inverse || threshold[ 4 ] > 0 ) {
+        auxSurface.threshold( signal, signal.rect, originPoint, "<", hwC, 0, 0x000000FF, true );
+        surface.copyChannel( auxSurface, auxSurface.rect, originPoint, 4, 4 );
+      }
+      else {
+        surface.copyChannel( signal, signal.rect, originPoint, 4, 4 );
+      }
+      auxSurface.unlock();
+    }
+    else {
+      if ( inverse || threshold[ 1 ] > 0 ) {
+        surface.threshold( signal, signal.rect, originPoint, inverse ? "<" : ">", hwC, 0, 0xFF000000, true );
+        inOriginal = false;
+      }
+      if ( inverse || threshold[ 2 ] > 0 ) {
+        if ( inOriginal ) {
+          surface.threshold( signal, signal.rect, originPoint, inverse ? "<" : ">", hwC, 0, 0x00FF0000, true );
+          inOriginal = false;
+        }
+        else {
+          surface.threshold( surface, surface.rect, originPoint, inverse ? "<" : ">", hwC, 0, 0x00FF0000, true );
+        }
+      }
+      if ( inverse || threshold[ 3 ] > 0 ) {
+        if ( inOriginal ) {
+          surface.threshold( signal, signal.rect, originPoint, inverse ? "<" : ">", hwC, 0, 0x0000FF00, true );
+          inOriginal = false;
+        }
+        else {
+          surface.threshold( surface, surface.rect, originPoint, inverse ? "<" : ">", hwC, 0, 0x0000FF00, true );
+        }
+      }
+      if ( inverse || threshold[ 4 ] > 0 ) {
+        if ( inOriginal ) {
+          surface.threshold( signal, signal.rect, originPoint, inverse ? "<" : ">", hwC, 0, 0x000000FF, true );
+          inOriginal = false;
+        }
+        else {
+          surface.threshold( surface, surface.rect, originPoint, inverse ? "<" : ">", hwC, 0, 0x000000FF, true );
+        }
+      }
+      if ( inOriginal ) {
+        surface.copyPixels( signal, signal.rect, originPoint, null, null, false );
+      }
+    }
+
+    signal.unlock();
+    surface.unlock();
+  };
+
+  Node.implement( "Threshold", {
+    input : [
+      { name : "signal", type : "Signal" },
+      { name : "threshold", type : "Color", value : [ "rgb", 0, 0, 0, 0 ] },
+      { name : "inverse", type : "Boolean", value : false },
+      { name : "separate", type : "Boolean", value : false }
+    ],
+    output : [ { name : "output", type : "Signal" } ],
+    evaluate : evaluate
+  } );
+})();
+
+/* Impl for IBoxBlurNode
+ */
+
+( function() {
+  var blurFilter = $.createBlurFilter( 0, 0, 1 );
+  var originPoint = $.createPoint( 0, 0 );
+
+  var evaluate = function( input, output, linkage, cache ) {
+    var signal = input( "signal" );
+    if ( !signal ) {
+      Debug.throw( "@ Impl.Filter.biliScript, IBoxBlurNode.evaluate: No input signal." );
+      return;
+    }
+
+    var radiusX = input( "radiusX" );
+    var radiusY = input( "radiusY" );
+    var iterations = input( "iterations" );
+
+    if ( !output.output || output.output.width !== signal.width || output.output.height !== signal.height ) {
+      if ( output.output ) {
+        output.output.dispose();
+      }
+      output.output = Bitmap.createBitmapData( signal.width, signal.height, true, 0 );
+    }
+    if ( !cache.auxSurface || cache.auxSurface.width !== signal.width || cache.auxSurface.height !== signal.height ) {
+      if ( cache.auxSurface ) {
+        cache.auxSurface.dispose();
+      }
+      cache.auxSurface = Bitmap.createBitmapData( signal.width, signal.height, true, 0 );
+    }
+
+    var surface = output.output;
+    var auxSurface = cache.auxSurface;
+    surface.lock();
+    auxSurface.lock();
+    signal.lock();
+    var inOriginal = true;
+    var inAux = false;
+
+    if ( radiusX > 0 || radiusY > 0 ) {
+      blurFilter.blurX = radiusX * Node.globalScale;
+      blurFilter.blurY = radiusY * Node.globalScale;
+
+      while( iterations > 0 ) {
+        blurFilter.quality = Math.min( 15, iterations );
+        if ( inAux ) {
+          surface.applyFilter( auxSurface, auxSurface.rect, originPoint, blurFilter );
+          inAux = false;
+        }
+        else {
+          if ( inOriginal ) {
+            surface.applyFilter( signal, signal.rect, originPoint, blurFilter );
+            inOriginal = false;
+            inAux = false;
+          }
+          else {
+            auxSurface.applyFilter( surface, surface.rect, originPoint, blurFilter );
+            inAux = true;
+          }
+        }
+        iterations = iterations - 15;
+      }
+    }
+    
+    if ( inAux ) {
+      surface.copyPixels( auxSurface, auxSurface.rect, originPoint, null, null, false );
+    }
+    else {
+      if ( inOriginal ) {
+        surface.copyPixels( signal, signal.rect, originPoint, null, null, false );
+      }
+    }
+    signal.unlock();
+    auxSurface.unlock();
+    surface.unlock();
+    return;
+  };
+
+  Node.implement( "BoxBlur", {
+    input : [
+      { name : "signal", type : "Signal" },
+      { name : "radiusX", type : "Number", value : 0 },
+      { name : "radiusY", type : "Number", value : 0 },
+      { name : "iterations", type : "Number", value : 1 },
+      { name : "blend", type : "String", value : "none" },
+      { name : "alpha", type : "Number", value : 1 },
+      { name : "threshold", type : "Color", value : [ "rgb", 0, 0, 0, 0 ] }
+    ],
+    output : [ { name : "output", type : "Signal" } ],
+    evaluate : evaluate
+  } );
+})();
+
+
+
+/* Impl for IValueNode
+ */
+
+( function() {
+  var evaluate = function( input, output, linkage, cache ) {
+    if ( input( "cached" ) ) {
+      if ( !cache.cacheReady ) {
+        cache.cacheReady = true;
+        cache.value = axAs( input( "as" ), input( "value" ) );
+      }
+      output.value = cache.value;
+      return;
+    }
+
+    output.value = axAs( input( "as" ), input( "value" ) );
+  };
+
+  Node.implement( "Value", {
+    input : [
+      { name : "value", type : "Any", value : "" },
+      { name : "as", type : "String", value : "Any" },
+      { name : "cached", type : "Boolean", value : false }
+    ],
+    output : [ { name : "value", type : "Any" } ],
+    evaluate : evaluate
+  } );
+})();
+
+/* Impl for IHashNode
+ */
+
+( function() {
+  var evaluate = function( input, output ) {
+    var i = 0;
+    var hash = {};
+    var keys = input( "keys" );
+    var values = input( "values" );
+    var count = Math.min( keys.length, values.length );
+    for ( i = 0; i < count; i ++ ) {
+      hash[ keys[ i + 0 ] + "" ] = values[ i + 0 ];
+    }
+
+    output.value = hash;
+  };
+
+  Node.implement( "Hash", {
+    input : [ { name : "keys", type : "Vector", value : [] }, { name : "values", type : "Vector", value : [] } ],
+    output : [ { name : "value", type : "Hash" } ],
+    evaluate : evaluate
+  } );
+})();
+
+/* Impl for IConcatNode
+ */
+
+( function() {
+  var evaluate = function( input, output ) {
+    output.value = ( input( "base" ) ).concat( input( "value" ) );
+  };
+
+  Node.implement( "Concat", {
+    input : [ { name : "base", type : "Vector", value : [] }, { name : "value", type : "Any", value : [] } ],
+    output : [ { name : "value", type : "Vector" } ],
+    evaluate : evaluate
+  } );
+})();
+// Spline related classes
+
+var Bezier = function() {
+  var subdivOne = function( cp, leftSegment, rightSegment, interpolation ) {
+    var poly = [];
+
+    for ( var d = 0; d < cp.length; d ++ ) {
+      leftSegment[ d ] = [ cp[ d ][ 0 ] ];
+      rightSegment[ d ] = [];
+      poly.push( cp[ d ] );
+    }
+
+    do {
+      var poly2 = [];
+
+      for ( var d = 0; d < cp.length; d ++ ) {
+        poly2.push([]);
+
+        if ( interpolation[ d + 0 ] ){
+          for ( var i = 0; i < poly[ d ].length - 1; i ++ ) {
+            poly2[ d ].push( ( interpolation[ d + 0 ] )( poly[ d ][ i ], poly[ d ][ i + 1 ], 0.5 ) );
+          }
+        }
+        else {
+          for ( var i = 0; i < poly[ d ].length - 1; i ++ ) {
+            poly2[ d ].push( ( poly[ d ][ i ] + poly[ d ][ i + 1 ] ) / 2 );
+          }
+        }
+
+        leftSegment[ d ].push( poly2[ d ][ 0 ] );
+        rightSegment[ d ].push( poly2[ d ][ poly2[ d ].length - 1 ] );
+      }
+
+      poly = poly2;
+    } while ( poly[ 0 ].length > 1 );
+
+    for ( var d = cp.length - 1; d >= 0; d -- ) {
+      rightSegment[ d ].unshift( cp[ d ][ cp[ d ].length - 1 ] );
+      rightSegment[ d ].reverse();
+    }
+  };
+
+  var split = function( lPs, rPs ) {
+    var lS = [];
+    var rS = [];
+    subdivOne( this.cp, lS, rS, this.interpolation );
+
+    var i = 0;
+    var d = 0;
+    for ( i = 0; i < lS[ 0 ].length; i ++ ) {
+      lPs.push([]);
+      for ( d = 0; d < this.dimension; d ++ ) {
+        lPs[ i + 0 ].push( lS[ d + 0 ][ i + 0 ] );
+      }
+    }
+    for ( i = 0; i < rS[ 0 ].length; i ++ ) {
+      rPs.push([]);
+      for ( d = 0; d < this.dimension; d ++ ) {
+        rPs[ i + 0 ].push( rS[ d + 0 ][ i + 0 ] );
+      }
+    }
+  };
+
+  var subdiv = function( precision, cp, removeRight, interpolation, distance, projected ) {
+    // check if precision requirements are fulfilled
+    var sumDelta = 0;
+    var start = 0;
+    var step = 0;
+    var end = 0;
+    var subdivStop = true;
+
+    if ( projected ) {
+      var d1 = cp[ 0 ];
+      var d2 = cp[ 1 ];
+      var d3 = cp[ 2 ];
+      var l = d1.length;
+      var l2 = l - 1;
+      if ( l > 2 ) {
+        sumDelta = 0;
+        var start1 = d1[ 0 ] / d3[ 0 ];
+        var start2 = d2[ 0 ] / d3[ 0 ];
+        var len1 = d1[ l2 ] / d3[ l2 ] - start1;
+        var len2 = d2[ l2 ] / d3[ l2 ] - start2;
+        var len3 = Math.abs( len1 ) < Math.abs( len2 ) ? len1 : len2;
+        for ( var i = l - 2; i >= 1; i -- ) {
+          sumDelta += Math.abs(
+            len3 * (
+              ( d1[ i ] / d3[ i ] - start1 ) / len1 -
+              ( d2[ i ] / d3[ i ] - start2 ) / len2
+            )
+          );
+        }
+        sumDelta = sumDelta / ( l - 2 );
+
+        if ( sumDelta > precision[ 0 ] ) {
+          subdivStop = false;
+        }
+        if ( sumDelta > precision[ 1 ] ) {
+          subdivStop = false;
+        }
+      }
+      else {
+        subdivStop = true;
+      }
+    }
+    else {
+      for ( var d = cp.length - 1; d >= 0; d -- ) {
+        sumDelta = 0;
+        start = cp[ d ][ 0 ];
+        end = cp[ d ][ cp[ d ].length - 1 ];
+
+        if ( interpolation[ d + 0 ] && distance[ d + 0 ] ) {
+          for ( var i = cp[ d ].length - 2; i >= 1; i -- ) {
+            sumDelta += ( distance[ d + 0 ] )( cp[ d ][ i ], ( interpolation[ d + 0 ] )( start, end, i / ( cp[ d ].length - 1 ) ) );
+          }
+        }
+        else {
+          step = ( end - start ) / ( cp[ d ].length - 1 );
+          for ( var i = cp[ d ].length - 2; i >= 1; i -- ) {
+            sumDelta += Math.abs( cp[ d ][ i ] - start - step * i );
+          }
+        }
+
+        sumDelta = cp[ d ].length > 2 ? ( sumDelta / ( cp[ d ].length - 2 ) ) : 0;
+
+        if ( sumDelta > precision[ d ] ) {
+          subdivStop = false;
+          break;
+        }
+      }
+    }
+
+    if ( subdivStop ) {
+      // return null indicating end of subdivision, treat as line
+      return null;
+    }
+    else {
+      // subdivide and create polyline
+      var leftSegment = [];
+      var rightSegment = [];
+      subdivOne( cp, leftSegment, rightSegment, interpolation );
+
+      // compose resulting polyline from recursive calls
+      var leftPoly = subdiv( precision, leftSegment, true, interpolation, distance, projected );
+      var rightPoly = subdiv( precision, rightSegment, removeRight, interpolation, distance, projected );
+
+      if ( ! leftPoly ) {
+        leftPoly = [ [] ];
+        for ( var d = 0; d < cp.length; d ++ ) {
+          leftPoly[ 0 ].push( cp[ d ][ 0 ] );
+        }
+      }
+
+      if ( rightPoly ) {
+        var retPoly = leftPoly.concat( rightPoly );
+        return retPoly;
+      }
+      else {
+        var tmp = [];
+
+        for ( var d = 0; d < cp.length; d ++ ) {
+          tmp.push( rightSegment[ d ][ 0 ] );
+        }
+        leftPoly.push( tmp );
+
+        if ( ! removeRight ) {
+          tmp = [];
+
+          for ( var d = 0; d < cp.length; d ++ ) {
+            tmp.push( rightSegment[ d ][ rightSegment[ d ].length - 1 ] );
+          }
+          leftPoly.push( tmp );
+        }
+
+        return leftPoly;
+      }
+    }
+  };
+
+  var toPolyline = function( precision ) {
+    if ( ! precision ) {
+      // Derive precision for each dimension from coordinate range, assure 1/100 precision
+      var max = 0;
+      var min = (0).constructor.MAX_VALUE;
+
+      precision = [];
+      for ( var d = 0; d < this.cp.length; d ++ ) {
+        if ( !this.interpolation[ d + 0 ] ) {
+          max = 0;
+          min = (0).constructor.MAX_VALUE;
+          for ( var i = this.cp[ d ].length - 1; i >= 0; i-- ) {
+            if ( this.cp[ d ][ i ] > max ) {
+              max = this.cp[ d ][ i ];
+            }
+            else if ( this.cp[ d ][ i ] < min ) {
+              min = this.cp[ d ][ i ];
+            }
+          }
+          precision.push( ( max - min ) / 100 );
+        }
+        else {
+          precision.push( 1 );
+        }
+      }
+    }
+    else if ( typeof precision === "number" ) {
+      var np = [];
+      for ( var d = 0; d < this.cp.length; d ++ ) {
+        np.push( precision );
+      }
+
+      precision = np;
+    }
+
+    return subdiv( precision, this.cp, false, this.interpolation, this.distance, this.projected ) || [ this.points[ 0 ], this.points[ this.points.length - 1 ] ];
+  };
+
+  return function( points ) {
+    // extract cp array for subdivision, evaluation and stuff
+    var cp = [];
+
+    for ( var d = 0; d < points[ 0 ].length; d ++ ) {
+      cp.push([]);
+      for ( var i = 0; i < points.length; i ++ ) {
+        cp[ d ].push( points[ i ][ d ] );
+      }
+    }
+
+    return {
+      points : points,
+      cp : cp,
+      // When set to true, during error approximation, performs division by dimension 3 and limits to dimension 2.
+      projected : false,
+      split : split,
+      // Set a interpolation and distance function for each dimension. If not provided arthemics are used
+      interpolation : [],
+      distance : [],
+      dimension : points[ 0 ].length,
+      toPolyline : toPolyline
+    };
+  };
+}();
+
+
+
+/* Impl for ISolidNode
+ */
+
+( function() {
+  var evaluate = function( input, output, linkage, cache ) {
+    var width = Math.floor( input( "width" ) * Node.globalScale );
+    var height = Math.floor( input( "height" ) * Node.globalScale );
+    var color = input( "color" );
+
+    if ( !output.output ) {
+      output.output = Bitmap.createBitmapData( width, height, true, Color.toHardware( color ) );
+      return;
+    }
+    if ( output.output.width !== width || output.output.height !== height ) {
+      output.output.dispose();
+      output.output = Bitmap.createBitmapData( width, height, true, Color.toHardware( color ) );
+    }
+    var hwC = Color.toHardware( color );
+    if ( cache.color !== hwC ) {
+      output.output.fillRect( output.output.rect, hwC );
+      cache.color = hwC;
+    }
+  };
+
+  Node.implement( "Solid", {
+    input : [
+      { name : "width", type : "Number", value : 100 },
+      { name : "height", type : "Number", value : 100 },
+      { name : "color", type : "Color", value : [ "rgb", 1, 1, 1, 1 ] }
+    ],
+    output : [ { name : "output", type : "Signal" } ],
+    evaluate : evaluate
+  } );
+})();
+
+/* Impl for IRendererNode
+ */
+
+( function() {
+  var originPoint = $.createPoint( 0, 0 );
+  var cubicAvaliable = ( $.createShape({}) ).graphics.hasOwnProperty( "cubicCurveTo" );
+
+  var toNativeMatrix = function( m ) {
+    if ( ( m.constructor === ([]).constructor ) && m.length === 6 ) {
+      var mat = $.createMatrix.apply( $, m );
+      mat.scale( Node.globalScale, Node.globalScale );
+      return mat;
+    }
+    else {
+      Debug.throw( "@ Impl.Renderer.biliScript, IRendererNode.toNativeMatrix: Not valid Matrix to be converted to native 2D Matrix." );
+    }
+  };
+
+  var resolveGradientBrush = function( graphics, b ) {
+    var gType = b.polar ? "radial" : "linear";
+    var colors = [];
+    var alphas = [];
+    var ratios = [];
+
+    var i = 0;
+    var hw = 0;
+    for( i = 0; i < b.colors.length; i ++ ) {
+      hw = Color.toHardware( b.colors[ i ] );
+      colors[ i ] = hw & 0xFFFFFF;
+      alphas[ i ] = ( ( hw & 0xFF000000 ) >>> 24 ) / 0xFF;
+      ratios[ i ] = Math.floor( i / ( b.colors.length - 1 ) * 255 );
+    }
+
+    if ( b.ratios && b.ratios.length === b.colors.length ) {
+      for( i = 0; i < b.colors.length; i ++ ) {
+        ratios[ i ] = Math.floor( b.ratios[ i ] * 255 );
+      }
+    }
+
+    var spreadMethod = b.spreadMethod || "pad";
+    var matrix = b.matrix ? toNativeMatrix( b.matrix ) : null;
+    var fPR = b.focalPointRatio || 0;
+
+    return [ gType, colors, alphas, ratios, matrix, spreadMethod, "rgb", focalPointRatio ];
+  };
+
+  var resolveBitmapBrush = function( graphics, b, tempTexArr ) {
+    var tex = b.texture;
+    var needCt = b.color && b.color.length > 0;
+    var needRf = b.spreadMethod === "reflect";
+    if ( needCt || needRf ) {
+      // Abstraction *LEAK* here. A BitmapData has to be created every time to avoid corruption to original Signal.
+      var newTex = null;
+      if ( needRf ) {
+        newTex = Bitmap.createBitmapData( tex.width * 2, tex.height * 2, true, 0 );
+        newTex.lock();
+
+        newTex.copyPixels( tex, tex.rect, originPoint, null, null, false );
+
+        var vMatrix = $.createMatrix( 1, 0, 0, 1, 0, 0 );
+        vMatrix.scale( 1, -1 );
+        vMatrix.translate( 0, tex.height * 2 );
+        newTex.draw( tex, vMatrix, null, "normal", null, false );
+        vMatrix.scale( -1, 1 );
+        vMatrix.translate( tex.width * 2, 0 );
+        newTex.draw( tex, vMatrix, null, "normal", null, false );
+        vMatrix.scale( 1, -1 );
+        vMatrix.translate( 0, tex.height * 2 );
+        newTex.draw( tex, vMatrix, null, "normal", null, false );
+      }
+      else {
+        newTex = Bitmap.createBitmapData( tex.width, tex.height, true, 0 );
+        newTex.lock();
+
+        newTex.copyPixels( tex, tex.rect, originPoint, null, null, false );
+      }
+
+      if ( needCt ) {
+        var rgb = Color.toRgb( b.color[ 0 ] );
+        var ct = $.createColorTransform( rgb[ 2 ], rgb[ 3 ], rgb[ 4 ], rgb[ 1 ], 0, 0, 0, 0 );
+        newTex.colorTransform( newTex.rect, ct );
+      }
+
+      newTex.unlock();
+      tex = newTex;
+      tempTexArr.push( newTex );
+    }
+
+    return [ tex, b.matrix ? toNativeMatrix( b.matrix ) : null, needRf || ( b.spreadMethod === "repeat" ), true ];
+  };
+
+  var transformPoints = function( pline, object, world, projection ) {
+    var i = 0;
+    var x = 0;
+    var y = 0;
+    var z = 0;
+    var w = 1;
+    var x2 = 0;
+    var y2 = 0;
+    var z2 = 0;
+    var w2 = 1;
+    var out = [];
+
+    for ( i = 0; i < pline.length; i ++ ) {
+      x = pline[ i ][ 0 ] || 0;
+      y = pline[ i ][ 1 ] || 0;
+      z = pline[ i ][ 2 ] || 0;
+      w = pline[ i ][ 3 ] || 1;
+
+      if ( object ) {
+        x2 = x * object[ 0 ] + y * object[ 4 ] + z * object[ 8 ] + w * object[ 12 ];
+        y2 = x * object[ 1 ] + y * object[ 5 ] + z * object[ 9 ] + w * object[ 13 ];
+        z2 = x * object[ 2 ] + y * object[ 6 ] + z * object[ 10 ] + w * object[ 14 ];
+        w2 = x * object[ 3 ] + y * object[ 7 ] + z * object[ 11 ] + w * object[ 15 ];
+        x = x2;
+        y = y2;
+        z = z2;
+        w = w2;
+      }
+      if ( world ) {
+        x2 = x * world[ 0 ] + y * world[ 4 ] + z * world[ 8 ] + w * world[ 12 ];
+        y2 = x * world[ 1 ] + y * world[ 5 ] + z * world[ 9 ] + w * world[ 13 ];
+        z2 = x * world[ 2 ] + y * world[ 6 ] + z * world[ 10 ] + w * world[ 14 ];
+        w2 = x * world[ 3 ] + y * world[ 7 ] + z * world[ 11 ] + w * world[ 15 ];
+        x = x2;
+        y = y2;
+        z = z2;
+        w = w2;
+      }
+      if ( projection ) {
+        x2 = x * projection[ 0 ] + y * projection[ 4 ] + z * projection[ 8 ] + w * projection[ 12 ];
+        y2 = x * projection[ 1 ] + y * projection[ 5 ] + z * projection[ 9 ] + w * projection[ 13 ];
+        z2 = x * projection[ 2 ] + y * projection[ 6 ] + z * projection[ 10 ] + w * projection[ 14 ];
+        w2 = x * projection[ 3 ] + y * projection[ 7 ] + z * projection[ 11 ] + w * projection[ 15 ];
+        x = x2;
+        y = y2;
+        z = z2;
+        w = w2;
+      }
+
+      out.push([ x * Node.globalScale, y * Node.globalScale, w ]);
+    }
+
+    return out;
+  };
+
+  var tmpMatrix3D = $.createMatrix3D( $.toNumberVector([ 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 ]) );
+  var xAxis = $.createVector3D( 1, 0, 0, 0 );
+  var yAxis = $.createVector3D( 0, 1, 0, 0 );
+  var zAxis = $.createVector3D( 0, 0, 1, 0 );
+
+  var renderPrimitive = function( graphics, p, world, projection ) {
+    var tempTexArr = [];
+    graphics.clear();
+    var fillBegan = false;
+
+    // setting up fill and stroke
+    if ( p.fill ) {
+      if ( p.fill.type === "flat" ) {
+        if ( p.fill.colors && p.fill.colors.length > 0 ) {
+          if ( p.fill.colors.length === 1 ) {
+            var hw = Color.toHardware( p.fill.colors[ 0 ] );
+            graphics.beginFill( ( hw & 0xFFFFFF ), ( ( hw & 0xFF000000 ) >>> 24 ) / 0xFF );
+          }
+          else {
+            graphics.beginGradientFill.apply( graphics, resolveGradientBrush( graphics, p.fill ) );
+          }
+          fillBegan = true;
+        }
+        else {
+          Debug.throw( "@ Impl.Renderer.biliScript, IRendererNode.renderPrimitive: No color for flat brush." );
+        }
+      }
+      else if ( p.fill.type === "texture" ) {
+        if ( axTypeOf( p.fill.texture ) === "Signal" ) {
+          graphics.beginBitmapFill.apply( graphics, resolveBitmapBrush( graphics, p.fill, tempTexArr ) );
+          fillBegan = true;
+        }
+        else {
+          Debug.throw( "@ Impl.Renderer.biliScript, IRendererNode.renderPrimitive: No Signal for texture brush." );
+        }
+      }
+    }
+
+    if ( p.stroke && p.stroke.type && p.stroke.type !== "none" && ( typeof p.stroke.width === "number" ) && p.stroke.width > 0 ) {
+      var caps = p.stroke.caps || "round";
+      var joints = p.stroke.joints || "round";
+      var miterLimit = p.stroke.miterLimit || 3;
+
+      if ( p.stroke.type === "flat" ) {
+        if ( p.stroke.colors && p.stroke.colors.length > 0 ) {
+          if ( p.stroke.colors.length === 1 ) {
+            var hw = Color.toHardware( p.stroke.colors[ 0 ] );
+            graphics.lineStyle( p.stroke.width * Node.globalScale, ( hw & 0xFFFFFF ), ( ( hw & 0xFF000000 ) >>> 24 ) / 0xFF, false, "normal", caps, joints, miterLimit );
+          }
+          else {
+            graphics.lineStyle( p.stroke.width * Node.globalScale, 0, 1, false, "normal", caps, joints, miterLimit );
+            graphics.lineGradientStyle.apply( graphics, resolveGradientBrush( graphics, p.stroke ) );
+          }
+        }
+        else {
+          Debug.throw( "@ Impl.Renderer.biliScript, IRendererNode.renderPrimitive: No color for flat brush." );
+        }
+      }
+      else if ( p.stroke.type === "texture" ) {
+        if ( axTypeOf( p.stroke.texture ) === "Signal" ) {
+          graphics.lineStyle( p.stroke.width * Node.globalScale, 0, 1, false, "normal", caps, joints, miterLimit );
+          graphics.lineBitmapStyle.apply( graphics, resolveBitmapBrush( graphics, p.stroke, tempTexArr ) );
+        }
+        else {
+          Debug.throw( "@ Impl.Renderer.biliScript, IRendererNode.renderPrimitive: No Signal for texture brush." );
+        }
+      }
+    }
+
+    // set up object transformation
+    var mat = null;
+    if ( p.transform ) {
+      var mat = tmpMatrix3D;
+      mat.identity();
+      if ( p.transform.anchor && p.transform.anchor.length > 0 ) {
+        mat.appendTranslation( - p.transform.anchor[ 0 ] || 0, - p.transform.anchor[ 1 ] || 0, - p.transform.anchor[ 2 ] || 0 );
+      }
+      if ( p.transform.scale && p.transform.scale.length > 0 ) {
+        mat.appendScale( p.transform.scale[ 0 ] || 1, p.transform.scale[ 1 ] || 1, p.transform.scale[ 2 ] || 1 );
+      }
+      if ( p.transform.rotation && p.transform.rotation.length > 0 ) {
+        mat.appendRotation( p.transform.rotation[ 0 ] || 0, xAxis );
+        mat.appendRotation( p.transform.rotation[ 1 ] || 0, yAxis );
+        mat.appendRotation( p.transform.rotation[ 2 ] || 0, zAxis );
+      }
+      if ( p.transform.position && p.transform.position.length > 0 ) {
+        mat.appendTranslation( p.transform.position[ 0 ] || 0, p.transform.position[ 1 ] || 0, p.transform.position[ 2 ] || 0 );
+      }
+      mat = mat.rawData;
+    }
+    
+    if ( p.type === "Polyline" ) {
+      var points = transformPoints( p.vertices, mat, world, projection );
+      if ( points.length > 0 ) {
+        var commands = $.toIntVector([ 1 ]);
+        var data = $.toNumberVector([ points[ 0 ][ 0 ] / points[ 0 ][ 2 ], points[ 0 ][ 1 ] / points[ 0 ][ 2 ] ]);
+
+        var i = 0;
+        for ( i = 1; i < points.length; i ++ ) {
+          commands.push( 2 );
+          data.push( points[ i ][ 0 ] / points[ i ][ 2 ] );
+          data.push( points[ i ][ 1 ] / points[ i ][ 2 ] );
+        }
+
+        graphics.drawPath( commands, data );
+      }
+    }
+    else if ( p.type === "Spline" ) {
+      var commands = $.toIntVector([]);
+      var data = $.toNumberVector([]);
+      var isFirst = true;
+      var points = null;
+      var bez = null;
+      var pl = null;
+
+      var i = 0;
+      var j = 0;
+      for ( i = 0; i < p.vertices.length; i ++ ) {
+        points = transformPoints( p.vertices[ i ], mat, world, projection );
+        if ( points.length === 1 ) {
+          commands.push( 1 );
+          data.push( points[ 0 ][ 0 ] / points[ 0 ][ 2 ] );
+          data.push( points[ 0 ][ 1 ] / points[ 0 ][ 2 ] );
+        }
+        else if ( points.length === 2 ) {
+          if ( isFirst ) {
+            commands.push( 1 );
+            isFirst = false;
+          }
+          else { 
+            commands.push( 2 );
+          }
+          commands.push( 2 );
+          data.push( points[ 0 ][ 0 ] / points[ 0 ][ 2 ] );
+          data.push( points[ 0 ][ 1 ] / points[ 0 ][ 2 ] );
+          data.push( points[ 1 ][ 0 ] / points[ 1 ][ 2 ] );
+          data.push( points[ 1 ][ 1 ] / points[ 1 ][ 2 ] );
+        }
+        else if ( points.length === 3 && points[ 0 ][ 2 ] === 1 && points[ 1 ][ 2 ] === 1 && points[ 2 ][ 2 ] === 1 ) {
+          if ( isFirst ) {
+            commands.push( 1 );
+            isFirst = false;
+          }
+          else { 
+            commands.push( 2 );
+          }
+          commands.push( 3 );
+          data.push( points[ 0 ][ 0 ] );
+          data.push( points[ 0 ][ 1 ] );
+          data.push( points[ 1 ][ 0 ] );
+          data.push( points[ 1 ][ 1 ] );
+          data.push( points[ 2 ][ 0 ] );
+          data.push( points[ 2 ][ 1 ] );
+        }
+        else if ( cubicAvaliable && points.length === 4 && points[ 0 ][ 2 ] === 1 && points[ 1 ][ 2 ] === 1 && points[ 2 ][ 2 ] === 1 && points[ 3 ][ 2 ] === 1 ) {
+          if ( isFirst ) {
+            commands.push( 1 );
+            isFirst = false;
+          }
+          else { 
+            commands.push( 2 );
+          }
+          commands.push( 6 );
+          data.push( points[ 0 ][ 0 ] );
+          data.push( points[ 0 ][ 1 ] );
+          data.push( points[ 1 ][ 0 ] );
+          data.push( points[ 1 ][ 1 ] );
+          data.push( points[ 2 ][ 0 ] );
+          data.push( points[ 2 ][ 1 ] );
+          data.push( points[ 3 ][ 0 ] );
+          data.push( points[ 3 ][ 1 ] );
+        }
+        else {
+          bez = Bezier( points );
+          bez.projected = true;
+          // Forcing precision to 1 makes sense here because after transform we draw the spline on screen,
+          // anything smaller than 1 pixel would be barely visible while expensive to calculate.
+          pl = bez.toPolyline( 1 );
+
+          for ( j = 0; j < pl.length; j ++ ) {
+            if ( isFirst ) {
+              commands.push( 1 );
+              isFirst = false;
+            }
+            else { 
+              commands.push( 2 );
+            }
+            data.push( pl[ j ][ 0 ] / pl[ j ][ 2 ] );
+            data.push( pl[ j ][ 1 ] / pl[ j ][ 2 ] );
+          }
+        }
+      }
+
+      graphics.drawPath( commands, data );
+    }
+
+    if ( fillBegan ) {
+      graphics.endFill();
+    }
+
+    // Housekeeping for temp textures generated by resolveBitmapBrush
+    var i = 0;
+    for ( i = tempTexArr.length; i --; ) {
+      tempTexArr[ i ].dispose();
+    }
+  };
+
+  var evaluate = function( input, output, linkage, cache ) {
+    var width = Math.floor( input( "width" ) );
+    var height = Math.floor( input( "height" ) );
+    if ( !output.output || output.output.width !== width || output.output.height !== height ) {
+      if ( output.output ) {
+        output.output.dispose();
+      }
+      output.output = Bitmap.createBitmapData( width, height, true, 0 );
+      cache.cacheReady = false;
+    }
+
+    var cached = input( "cached" );
+    if ( cached && cache.cacheReady ) {
+      return;
+    }
+
+    if ( !cache.canvas ) {
+      cache.canvas = $.createShape( {
+        lifeTime : 810114514
+      });
+      
+      ScriptManager.popEl( cache.canvas );
+      
+      cache.canvas.transform.matrix3D = null;
+      cache.canvas.cacheAsBitmap = false;
+    }
+
+    var world = input( "world" );
+    var projection = input( "projection" );
+
+    var surface = output.output;
+    var graphics = cache.canvas.graphics;
+    var p = null;
+    surface.lock();
+    surface.fillRect( surface.rect, 0 );
+
+    var content = input( "content" );
+
+    if ( projection ) {
+      // TODO: Sort primitives by depth
+    }
+
+    var i = 0;
+    for ( i = 0; i < content.length; i ++ ) {
+      p = content[ i ];
+      if ( p.type === "Signal" ) {
+        if ( !p.fill || p.fill.type !== "texture" || axTypeOf( p.fill.texture ) !== "Signal" ) {
+          Debug.throw( "@ Impl.Renderer.biliScript, IRendererNode.evaluate: No Signal privided with Signal primitive." );
+        }
+        if ( ( p.blend && p.blend !== "normal" ) || p.fill.matrix || ( p.fill.color && p.fill.color.length > 0 ) ) {
+          // Draw required
+          var ct = null;
+          if ( p.fill.color && p.fill.color.length > 0 ) {
+            var rgb = Color.toRgb( p.fill.color[ 0 ] );
+            ct = $.createColorTransform( rgb[ 2 ], rgb[ 3 ], rgb[ 4 ], rgb[ 1 ], 0, 0, 0, 0 );
+          }
+          surface.draw( p.fill.texture, p.fill.matrix ? toNativeMatrix( p.fill.matrix ) : null, ct, p.blend, null, true );
+        }
+        else {
+          surface.copyPixels( p.fill.texture, p.fill.texture.rect, originPoint, null, null, true );
+        }
+      }
+      else {
+        renderPrimitive( graphics, p, world, projection );
+        surface.draw( cache.canvas, null, null, p.blend || "normal", null, false );
+      }
+    }
+
+    surface.unlock();
+
+    cache.cacheReady = true;
+  };
+
+  var dispose = function( output, cache ) {
+    if ( output.output ) {
+      output.output.dispose();
+      output.output = null;
+    }
+  };
+
+  Node.implement( "Renderer", {
+    input : [
+      { name : "width", type : "Number", value : 100 },
+      { name : "height", type : "Number", value : 100 },
+      { name : "content", type : "Drawable", value : [] },
+      { name : "world", type : "Matrix", value : null },
+      { name : "projection", type : "Matrix", value : null },
+      { name : "cached", type : "Boolean", value : false }
+    ],
+    output : [ { name : "output", type : "Signal" } ],
+    evaluate : evaluate,
+    dispose : dispose
+  } );
+})();
+
+
+Global._set( "__axExport", AkariX );
+
+};
+
+load("libBitmap",axInit);
+
+})();
+
+var global = this;
+
+// Fight async load()
+var axWait = function ( callback ) {
+  var handle = 0;
+  var checkFunc = function () {
+    var aX = Global._get( "__axExport" );
+    if ( aX ) {
+      ScriptManager.clearTimer();
+      callback( aX );
+    }
+  };
+
+  handle = interval( checkFunc, 20, 0 );
+};
+
+axWait( function( AkariX ) {
+  AkariX.extend( global, AkariX );
+
+  Compositor.initialize({
+    nodes : [
+      { type : "DebugOutput", input : {}, links : { "signal" : { target : 5, targetOutput : "output" } } },
+      {
+        type : "Renderer",
+        input : {},
+        links : {
+          "content" : { target : 2, targetOutput : "value" },
+          "width" : { target : 4, targetOutput : "width" },
+          "height" : { target : 4, targetOutput : "height" }
+        } 
+      },
+      {
+        type : "Concat",
+        input : {},
+        links : { "value" : { target : 3, targetOutput : "value" } }
+      },
+      {
+        type : "Keyframes",
+        input : {
+          "keyframes" : [
+            [
+              [ 0,
+                {
+                  type : "Spline",
+                  vertices : [ [ [ 0, 0 ], [ 100, 50 ], [ 0, 100 ] ], [ [ 0, 100 ], [ 0, 0 ] ] ],
+                  fill : {
+                    type : "flat",
+                    colors : [ [ "rgb", 1, 0, 0, 1 ] ]
+                  },
+                  stroke : {
+                    type : "none"
+                  },
+                  transform : {
+                    scale : [ 1, 1 ,1 ]
+                  }
+                }
+              ],
+              [ 10000, 
+                {
+                  type : "Spline",
+                  vertices : [
+                    [ [ 0, 0 ], [ 50, 0 ], [ 100, 50 ] ],
+                    [ [ 100, 50 ], [ 50, 100 ], [ 0, 100 ] ],
+                    [ [ 0, 100 ], [ 0, 0 ] ]
+                  ],
+                  fill : {
+                    type : "flat",
+                    colors : [ [ "rgb", 1, 0, 0, 1 ], [ "rgb", 1, 1, 1, 0 ], [ "rgb", 0, 0, 0, 0 ] ],
+                    ratios : [ 0, 0.5, 1 ]
+                  },
+                  stroke : {
+                    type : "none"
+                  },
+                  transform : {
+                    scale : [ 2, 2 ,1 ]
+                  }
+                }
+              ]
+            ]
+          ],
+          "as" : "Primitive",
+          "cacheSpline" : true
+        },
+        links : { "time" : { target : 4, targetOutput : "time" } }
+      },
+      { type : "Presentation", input : {}, links : {} },
+      { type : "BoxBlur", input : { radiusX : 5, radiusY : 0 }, links : { "signal" : { target : 1, targetOutput : "output" } } }
+    ],
+    links : [],
+    entryPoint : 0
+  });
+
+});

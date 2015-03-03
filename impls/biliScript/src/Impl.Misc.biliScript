@@ -1,0 +1,69 @@
+// {{Depend : API}} //
+// {{Depend : Utilities}} //
+
+/* Impl for IValueNode
+ */
+
+( function() {
+  var evaluate = function( input, output, linkage, cache ) {
+    if ( input( "cached" ) ) {
+      if ( !cache.cacheReady ) {
+        cache.cacheReady = true;
+        cache.value = axAs( input( "as" ), input( "value" ) );
+      }
+      output.value = cache.value;
+      return;
+    }
+
+    output.value = axAs( input( "as" ), input( "value" ) );
+  };
+
+  Node.implement( "Value", {
+    input : [
+      { name : "value", type : "Any", value : "" },
+      { name : "as", type : "String", value : "Any" },
+      { name : "cached", type : "Boolean", value : false }
+    ],
+    output : [ { name : "value", type : "Any" } ],
+    evaluate : evaluate
+  } );
+})();
+
+/* Impl for IHashNode
+ */
+
+( function() {
+  var evaluate = function( input, output ) {
+    var i = 0;
+    var hash = {};
+    var keys = input( "keys" );
+    var values = input( "values" );
+    var count = Math.min( keys.length, values.length );
+    for ( i = 0; i < count; i ++ ) {
+      hash[ keys[ i + 0 ] + "" ] = values[ i + 0 ];
+    }
+
+    output.value = hash;
+  };
+
+  Node.implement( "Hash", {
+    input : [ { name : "keys", type : "Vector", value : [] }, { name : "values", type : "Vector", value : [] } ],
+    output : [ { name : "value", type : "Hash" } ],
+    evaluate : evaluate
+  } );
+})();
+
+/* Impl for IConcatNode
+ */
+
+( function() {
+  var evaluate = function( input, output ) {
+    output.value = ( input( "base" ) ).concat( input( "value" ) );
+  };
+
+  Node.implement( "Concat", {
+    input : [ { name : "base", type : "Vector", value : [] }, { name : "value", type : "Any", value : [] } ],
+    output : [ { name : "value", type : "Vector" } ],
+    evaluate : evaluate
+  } );
+})();

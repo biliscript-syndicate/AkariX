@@ -1,0 +1,189 @@
+// {{Depend : API}} //
+// {{Depend : Utilities}} //
+
+/* Impl for ICheckerNode
+ */
+
+( function() {
+  var evaluate = function( input, output ) {
+    var d = input( "base" );
+    var width = input( "width" );
+    var height = input( "height" );
+    var frequencyX = input( "frequencyX" );
+    var frequencyY = input( "frequencyY" );
+    var color1 = input( "color1" );
+    var color2 = input( "color2" );
+
+    if ( color1[ 1 ] > 0 ) {
+      d = d.concat({
+        type : "Polyline",
+        vertices : [ [ 0, 0 ], [ width, 0 ], [ width, height ], [ 0, height ] ],
+        fill : {
+          type : "flat",
+          colors : [ color1 ]
+        },
+        stroke : {
+          type : "none"
+        }
+      });
+    }
+
+    var vertices = [[ 0, 0 ]];
+
+    var i = 0;
+    for ( i = 0; i <= frequencyY; i ++ ) {
+      if ( i % 2 === 0 ) {
+        vertices.push([ 0, height * i / frequencyY ]);
+        vertices.push([ width, height * i / frequencyY ]);
+      }
+      else {
+        vertices.push([ width, height * i / frequencyY ]);
+        vertices.push([ 0, height * i / frequencyY ]);
+      }
+    }
+    if ( frequencyY % 2 === 0 ) {
+      vertices.push([ width, 0 ]);
+    }
+    vertices.push([ 0, 0 ]);
+    
+    for ( i = 0; i <= frequencyX; i ++ ) {
+      if ( i % 2 === 0 ) {
+        vertices.push([ width * i / frequencyX, 0 ]);
+        vertices.push([ width * i / frequencyX, height ]);
+      }
+      else {
+        vertices.push([ width * i / frequencyX, height ]);
+        vertices.push([ width * i / frequencyX, 0 ]);
+      }
+    }
+    if ( frequencyX % 2 === 0 ) {
+      vertices.push([ 0, height ]);
+    }
+    vertices.push([ 0, 0 ]);
+
+    d = d.concat({
+      type : "Polyline",
+      vertices : vertices,
+      fill : {
+        type : "flat",
+        colors : [ color2 ]
+      },
+      stroke : {
+        type : "none"
+      }
+    });
+    output.output = d;
+  };
+
+  Node.implement( "Checker", {
+    input : [
+      { name : "width", type : "Number", value : 100 },
+      { name : "height", type : "Number", value : 100 },
+      { name : "frequencyX", type : "Number", value : 16 },
+      { name : "frequencyY", type : "Number", value : 16 },
+      { name : "color1", type : "Color", value : [ "rgb", 1, 1, 1, 1 ] },
+      { name : "color2", type : "Color", value : [ "rgb", 1, 0, 0, 0 ] },
+      { name : "base", type : "Drawable", value : [] }
+    ],
+    output : [ { name : "output", type : "Drawable" } ],
+    evaluate : evaluate
+  } );
+})();
+
+/* Impl for IPrimitiveNode
+ */
+
+( function() {
+  var evaluate = function( input, output ) {
+    var d = input( "base" );
+
+    output.output = d.concat({
+      type : input( "type" ),
+      blend : input( "blend" ),
+      vertices : input( "vertices" ),
+      fill : input( "fill" ),
+      stroke : input( "stroke" ),
+      transform : input( "transform" )
+    });
+  };
+
+  Node.implement( "Primitive", {
+    input : [
+      { name : "base", type : "Drawable", value : [] },
+      { name : "type", type : "String", value : "Spline" },
+      { name : "blend", type : "String", value : "normal" },
+      { name : "vertices", type : "Vector", value : [] },
+      { name : "fill", type : "Brush", value : { type : "none" } },
+      { name : "stroke", type : "Brush", value : { type : "none" } },
+      { name : "transform", type : "Transform", value : {} }
+    ],
+    output : [ { name : "output", type : "Drawable" } ],
+    evaluate : evaluate
+  } );
+})();
+
+/* Impl for IBrushNode
+ */
+
+( function() {
+  var evaluate = function( input, output ) {
+    output.output = {
+      width : input( "width" ),
+      caps : input( "caps" ),
+      joint : input( "joint" ),
+      miterLimit : input( "miterLimit" ),
+      type : input( "type" ),
+      texture : input( "texture" ),
+      colors : input( "colors" ),
+      ratios : input( "ratios" ),
+      spreadMethod : input( "spreadMethod" ),
+      matrix : input( "matrix" ),
+      polar : input( "polar" ),
+      focalPointRatio : input( "focalPointRatio" )
+    };
+  };
+
+  Node.implement( "Brush", {
+    input : [
+      { name : "width", type : "Number", value : 0 },
+      { name : "caps", type : "String", value : "round" },
+      { name : "joint", type : "String", value : "round" },
+      { name : "miterLimit", type : "Number", value : 3 },
+      { name : "type", type : "String", value : "none" },
+      { name : "texture", type : "Signal", value : null },
+      { name : "colors", type : "Vector", value : [] },
+      { name : "ratios", type : "Vector", value : [] },
+      { name : "spreadMethod", type : "String", value : "pad" },
+      { name : "matrix", type : "Matrix", value : [ 1, 0, 0, 0, 1, 0 ] },
+      { name : "polar", type : "Boolean", value : false },
+      { name : "focalPointRatio", type : "Number", value : 0 }
+    ],
+    output : [ { name : "output", type : "Brush" } ],
+    evaluate : evaluate
+  } );
+})();
+
+/* Impl for ITransformNode
+ */
+
+( function() {
+  var evaluate = function( input, output ) {
+    output.output = {
+      anchor : input( "anchor" ),
+      rotation : input( "rotation" ),
+      scale : input( "scale" ),
+      position : input( "position" )
+    };
+  };
+
+  Node.implement( "Transform", {
+    input : [
+      { name : "anchor", type : "Vector", value : [ 0, 0, 0 ] },
+      { name : "rotation", type : "Vector", value : [ 0, 0, 0 ] },
+      { name : "scale", type : "Vector", value : [ 1, 1, 1 ] },
+      { name : "position", type : "Vector", value : [ 0, 0, 0 ] }
+    ],
+    output : [ { name : "output", type : "Transform" } ],
+    evaluate : evaluate
+  } );
+})();

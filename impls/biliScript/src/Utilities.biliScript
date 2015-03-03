@@ -1,0 +1,653 @@
+
+var undef = ( function( a ) { return a; } )();
+
+var Debug = {
+  throw : function ( message ) {
+    trace( message );
+    Compositor.dispose();
+  },
+  dump : function() {
+    trace( "Trace: " + axUnpack( cast( "String", this.stack ) ) );
+    trace( "Local Input: " + axUnpack( cast( "String", this.local ) ) );
+  },
+  stack : [],
+  local : {},
+  timeUsage : [],
+  baseTime : 0,
+  push : function( index ) {
+    if ( this.stack.length > 0 ) {
+      var old = this.stack[ this.stack.length - 1 ];
+      this.timeUsage[ old ] = ( this.timeUsage[ old ] || 0 ) + getTimer() - this.baseTime;
+    }
+    this.stack.push( index );
+    this.baseTime = getTimer();
+  },
+  pop : function() {
+    var index = this.stack.pop();
+    this.timeUsage[ index ] = ( this.timeUsage[ index ] || 0 ) + getTimer() - this.baseTime;
+    this.baseTime = getTimer();
+  }
+};
+
+var extend = function( destination, source ) {
+  // Iterate through the source
+  foreach ( source, function( key, object ) {
+    destination[ key.toString() ] = object;
+  });
+  
+  return destination;
+};
+
+// For deep cloning Vectors, Hashes and such. NO Signals!
+var axClone = function( object ) {
+  var axType = axTypeOf( object );
+  var value = axUnpack( object );
+
+  if ( !value || ( value === true ) ) {
+    return value;
+  }
+
+  if ( typeof value === "function" ) {
+    return value;
+  }
+
+  switch( axType ) {
+    case "Number":
+    case "String":
+    case "Boolean":
+      // Avoid calling clone() for immutables or primitives
+      return object;
+      break;
+    case "Signal":
+      // Avoid cloning Signal in Hashes / Vectors for performance.
+      // Assuming that implementations does not modify Signals in Drawables,
+      // and Signals are cloned explicitly (i.e. copyPixels) whenever needed by a node implementation.
+      // Using axClone for cloning Signal is WRONG!
+      return object;
+      break;
+    case "Any":
+      return clone( object );
+      break;
+  }
+
+  var stack = [ [ object, null, 0 ] ];
+  var ret = null;
+
+  while( stack.length > 0 ) {
+    var current = stack.pop();
+    var obj = current[ 0 ];
+    var nObj = current[ 1 ];
+    var i = current[ 2 ];
+
+    if ( obj.constructor === ([]).constructor && !current[ 3 ] ) {
+      if ( i === 0 ) {
+        nObj = [];
+      }
+      else {
+        nObj.push( ret );
+      }
+      for( ; i < obj.length; i ++ ) {
+        if ( obj[ i ] && ( (obj[ i ]).constructor === ({}).constructor || (obj[ i ]).constructor === ([]).constructor ) ) {
+          stack.push( [ obj, nObj, i + 1 ] );
+          stack.push( [ obj[ i ], null, 0 ] );
+          break;
+        }
+        else {
+          nObj.push( obj[ i ] );
+        }
+      }
+
+      if ( i === obj.length ) {
+        ret = nObj;
+      }
+    }
+    else if ( obj.constructor === ({}).constructor || current[ 3 ] ) {
+      if ( current[ 3 ] ) {
+        if ( i === 0 ) {
+          nObj = {};
+        }
+        else {
+          nObj[ obj[ i - 1 ][ 0 ].toString() ] = ret;
+        }
+        for( ; i < obj.length; i ++ ) {
+          if ( obj[ i ][ 1 ] && ( (obj[ i ][ 1 ]).constructor === ({}).constructor || (obj[ i ][ 1 ]).constructor === ([]).constructor ) ) {
+            stack.push( [ obj, nObj, i + 1, true ] );
+            stack.push( [ obj[ i ][ 1 ], null, 0 ] );
+            break;
+          }
+          else {
+            nObj[ obj[ i ][ 0 ].toString() ] = obj[ i ][ 1 ];
+          }
+        }
+
+        if ( i === obj.length ) {
+          ret = nObj;
+        }
+      }
+      else {
+        var vec = [];
+        foreach( obj, function( k, v ) {
+          vec.push( [ k, v ] );
+          return 0;
+        });
+
+        stack.push( [ vec, null, 0, true ] );
+      }
+    }
+  }
+
+  return ret;
+};
+
+var Color = function() {
+  var xN = 0.95047;
+  var yN = 1.0000;
+  var zN = 1.08883;
+
+  var labInvF = function( t ) {
+    if ( t > 0.008856451679035631 ) {
+      return t * t * t;
+    }
+    else {
+      return 0.12841854934601665 * ( t - 0.13793103448275862 );
+    }
+  };
+
+  var hslToRgb = function( hsl ) {
+    var h = hsl[ 2 ] % 360;
+    var c = ( 1 - Math.abs( 2 * hsl[ 4 ] - 1 ) ) * hsl[ 3 ];
+    var x = c * ( 1 - Math.abs( ( h / 60 ) % 2 - 1 ) );
+    var m = hsl[ 4 ] - c / 2;
+
+    if ( h < 60 ) {
+      return [ "rgb", hsl[ 1 ], c + m, x + m, m ];
+    }
+    if ( h < 120 ) {
+      return [ "rgb", hsl[ 1 ], x + m, c + m, m ];
+    }
+    if ( h < 180 ) {
+      return [ "rgb", hsl[ 1 ], m, c + m, x + m ];
+    }
+    if ( h < 240 ) {
+      return [ "rgb", hsl[ 1 ], m, x + m, c + m ];
+    }
+    if ( h < 300 ) {
+      return [ "rgb", hsl[ 1 ], x + m, m, c + m ];
+    }
+    return [ "rgb", hsl[ 1 ], c + m, m, x + m ];
+  };
+
+  var labToRgb = function( lab ) {
+    var t = ( lab[ 2 ] + 16 ) / 116;
+
+    var xyz = [
+      xN * labInvF( t + lab[ 3 ] / 500 ),
+      yN * labInvF( t ),
+      zN * labInvF( t - lab[ 4 ] / 200 )
+    ];
+
+    var rgb = [
+      "rgb",
+      lab[ 1 ],
+      3.2406 * xyz[ 0 ] - 1.5372 * xyz[ 1 ] - 0.4986 * xyz[ 2 ],
+      - 0.9689 * xyz[ 0 ] + 1.8758 * xyz[ 1 ] + 0.0415 * xyz[ 2 ],
+      0.0557 * xyz[ 0 ] - 0.2040 * xyz[ 1 ] + 1.0570 * xyz[ 2 ]
+    ];
+
+    for ( var i = 4; i >= 2; i -- ) {
+      if ( rgb[ 0 + i ] > 0.0031308 ) {
+        rgb[ 0 + i ] = 1.055 * Math.pow( rgb[ 0 + i ], 1 / 2.4 ) - 0.055;
+      }
+      else {
+        rgb[ 0 + i ] = 12.92 * rgb[ 0 + i ];
+      }
+    }
+
+    return rgb;
+  };
+
+  var rgbToHardware = function( rgb ) {
+    var a = Math.min( 255, Math.max( 0, Math.floor( rgb[ 1 ] * 255 ) ) );
+    var r = Math.min( 255, Math.max( 0, Math.floor( rgb[ 2 ] * 255 ) ) );
+    var g = Math.min( 255, Math.max( 0, Math.floor( rgb[ 3 ] * 255 ) ) );
+    var b = Math.min( 255, Math.max( 0, Math.floor( rgb[ 4 ] * 255 ) ) );
+    return ( a << 24 ) | ( r << 16 ) | ( g << 8 ) | b;
+  };
+
+  return {
+    toRgb : function( color ) {
+      switch ( color[ 0 ] ) {
+        case "rgb":
+          return color;
+          break;
+        case "lab":
+          return labToRgb( color );
+          break;
+        case "hsl":
+          return hslToRgb( color );
+          break;
+      }
+      Debug.throw( "@ Utilities.biliScript, Color.toRgb: Unindentified color format: " + color[ 0 ] );
+    },
+
+    toHardware : function( color ) {
+      return rgbToHardware( this.toRgb( color ) );
+    }
+  };
+}();
+
+var Vector = {
+  add : function() {
+    var dimension = arguments[ 0 ].length;
+    var result = [];
+    for ( var d = 0; d < dimension; d ++ ) {
+      result[ d ] = arguments[ 0 ][ d ];
+    }
+
+    for ( var i = 1; i < arguments.length; i ++ ) {
+      for ( var d = 0; d < dimension; d ++ ) {
+        result[ d ] += arguments[ i ][ d ] || 0;
+      }
+    }
+
+    return result;
+  },
+
+  subtract : function( a, b ) {
+    var dimension = a.length;
+    var result = [];
+
+    for ( var d = 0; d < dimension; d ++ ) {
+      result[ d ] = a[ d ] - ( b[ d ] || 0 );
+    }
+
+    return result;
+  },
+
+  dot : function( a, b ) {
+    var dimension = a.length;
+    var result = 0;
+
+    for ( var d = 0; d < dimension; d ++ ) {
+      result += a[ d ] * ( b[ d ] || 0 );
+    }
+
+    return result;
+  },
+
+  scale : function( v, s ) {
+    var dimension = v.length;
+    var result = [];
+
+    for ( var d = 0; d < dimension; d ++ ) {
+      result[ d ] = v[ d ] * s;
+    }
+
+    return result;
+  },
+
+  length : function( v ) {
+    var dimension = v.length;
+    var result = 0;
+
+    for ( var d = 0; d < dimension; d ++ ) {
+      result += v[ d ] * v[ d ];
+    }
+
+    result = Math.sqrt( result );
+
+    return result;
+  },
+
+  unit : function( v ) {
+    return this.scale( v, 1 / this.length( v ) );
+  },
+
+  angle : function( a, b ) {
+    return Math.acos( this.dot( a, b ) / ( this.length( a ) * this.length( b ) ) );
+  }
+};
+
+// Returns the type string for native object O in context of AkariX
+var axTypeOf = function() {
+  var bitmapDataClass = ( Bitmap.createBitmapData( 1, 1, true, 0xFFFFFFFF ) ).constructor;
+
+  return function( o ) {
+    if ( o === undef || o === null ) {
+      return "Any";
+    }
+    if ( o.hasOwnProperty( "__axAsType" ) && ( o[ "__axAsType" ] !== "Any" ) ) {
+      return o[ "__axAsType" ];
+    }
+    if ( typeof o === "number" ) {
+      return "Number";
+    }
+    if ( typeof o === "boolean" ) {
+      return "Boolean";
+    }
+    if ( typeof o === "string" ) {
+      return "String";
+    }
+    if ( o.constructor === ([]).constructor ) {
+      return "Vector";
+    }
+    if ( o instanceof bitmapDataClass ) {
+      return "Signal";
+    }
+    if ( o.constructor === ({}).constructor ) {
+      return "Hash";
+    }
+    return "Any";
+  };
+}();
+
+var axAs = function( type, value ) {
+  if ( type === "Any" ) {
+    return value;
+  }
+  if ( value.hasOwnProperty( "__axAsType" ) ) {
+    value[ "__axAsType" ] = type;
+    return value;
+  }
+  return {
+    "__axAsType" : type,
+    "__axValue" : value
+  };
+};
+
+var axUnpack = function( packed ) {
+  if ( packed === undef || packed === null ) {
+    return packed;
+  }
+  if ( packed.hasOwnProperty( "__axAsType" ) ) {
+    return packed[ "__axValue" ];
+  }
+  return packed;
+};
+
+var axSanity = function() {
+  var checks = {
+    Drawable : function( o ) {
+      if ( o.constructor === ([]).constructor ) {
+        var i = 0;
+        for ( i = 0; i < o.length; i ++ ) {
+          if ( !axSanity( "Primitive", o[ i + 0 ] ) ) {
+            return false;
+          }
+        }
+
+        return true;
+      }
+      else {
+        return false;
+      }
+    }
+  };
+
+  return function( type, value ) {
+    if ( checks.hasOwnProperty( type ) ) {
+      return checks[ type ]( value );
+    }
+    else {
+      return true;
+    }
+  };
+}();
+
+var cast = function() {
+  var strHashVec = function( o ) {
+    var stack = [];
+    stack.push( [ o, "", 0 ] );
+    var ret = "";
+
+    while( stack.length > 0 ) {
+      var current = stack.pop();
+      var obj = current[ 0 ];
+      var str = current[ 1 ];
+      var i = current[ 2 ];
+
+      if ( obj.constructor === ([]).constructor && !current[ 3 ] ) {
+        if ( i === 0 ) {
+          str = "[ ";
+        }
+        else {
+          str += ret + ", ";
+        }
+        for( ; i < obj.length; i ++ ) {
+          if ( obj[ i ] && ( (obj[ i ]).constructor === ({}).constructor || (obj[ i ]).constructor === ([]).constructor ) ) {
+            stack.push( [ obj, str, i + 1 ] );
+            stack.push( [ obj[ i ], "", 0 ] );
+            break;
+          }
+          else {
+            str += casts.String( axTypeOf( obj[ i ] ), obj[ i ] ) + ", ";
+          }
+        }
+
+        if ( i === obj.length ) {
+          ret = str.length > 2 ? str.substr( 0, str.length - 2 ) + " ]" : "[]";
+        }
+      }
+      else if ( obj.constructor === ({}).constructor || current[ 3 ] ) {
+        if ( current[ 3 ] ) {
+          if ( i === 0 ) {
+            str = "{ ";
+          }
+          else {
+            str += obj[ i - 1 ][ 0 ].toString() + " : " + ret + ", ";
+          }
+          for( ; i < obj.length; i ++ ) {
+            if ( obj[ i ][ 1 ] && ( (obj[ i ][ 1 ]).constructor === ({}).constructor || (obj[ i ][ 1 ]).constructor === ([]).constructor ) ) {
+              stack.push( [ obj, str, i + 1, true ] );
+              stack.push( [ obj[ i ][ 1 ], "", 0 ] );
+              break;
+            }
+            else {
+              str += obj[ i ][ 0 ].toString() + " : " + casts.String( axTypeOf( obj[ i ][ 1 ] ), obj[ i ][ 1 ] ) + ", ";
+            }
+          }
+
+          if ( i === obj.length ) {
+            ret = str.length > 2 ? str.substr( 0, str.length - 2 ) + " }" : "{}";
+          }
+        }
+        else {
+          var vec = [];
+          foreach( obj, function( k, v ) {
+            vec.push( [ k, v ] );
+            return 0;
+          });
+
+          stack.push( [ vec, "", 0, true ] );
+        }
+      }
+    }
+
+    return ret;
+  };
+
+  var casts = {
+    Any : function( axType, o ) {
+      return o;
+    },
+
+    Signal : function( axType, o ) {
+      if ( axType === "Signal" ) {
+        return o;
+      }
+      Debug.throw( "@ Utilities.biliScript, cast: Cannot cast to Signal from: " + axType );
+    },
+
+    Drawable : function( axType, o ) {
+      if ( axType === "Drawable" ) {
+        return o;
+      }
+      if ( axType === "Vector" && axSanity( "Drawable", o ) ) {
+        return o;
+      }
+      Debug.throw( "@ Utilities.biliScript, cast: Cannot cast to Drawable from: " + axType );
+    },
+
+    Brush : function( axType, o ) {
+      if ( axType === "Brush" ) {
+        return o;
+      }
+      Debug.throw( "@ Utilities.biliScript, cast: Cannot cast to Brush from: " + axType );
+    },
+
+    Hash : function( axType, o ) {
+      if ( axType === "Hash" || axType === "Brush" ) {
+        return o;
+      }
+      Debug.throw( "@ Utilities.biliScript, cast: Cannot cast to Hash from: " + axType );
+    },
+
+    Boolean : function( axType, o, undef ) {
+      if ( axType === "Boolean" ) {
+        return o;
+      }
+      if ( axType === "Any" ) {
+        return ( o !== null && o !== undef );
+      }
+      return true;
+    },
+
+    String : function( axType, o ) {
+      switch( axType ) {
+        case "Boolean":
+          return o ? "true" : "false";
+          break;
+        case "Number":
+          return o.toString();
+          break;
+        case "String":
+          return o;
+          break;
+        case "Color":
+          switch( o[ 0 ] ) {
+            case "rgb":
+              return "{C A : " + o[ 1 ] + ", R : " + o[ 2 ] + ", G : " + o[ 3 ] + ", B : " + o[ 4 ] + " }";
+              break;
+            case "lab":
+              return "{C A : " + o[ 1 ] + ", L : " + o[ 2 ] + ", A : " + o[ 3 ] + ", B : " + o[ 4 ] + " }";
+              break;
+            case "hsl":
+              return "{C A : " + o[ 1 ] + ", H : " + o[ 2 ] + ", S : " + o[ 3 ] + ", L : " + o[ 4 ] + " }";
+              break;
+            default:
+              Debug.throw( "@ Utilities.biliScript, cast: Unindentified color format: " + color[ 0 ] );
+              break;
+          }
+          break;
+        case "Vector":
+        case "Matrix":
+        case "Brush":
+        case "Drawable":
+        case "Hash":
+          return strHashVec( o );
+          break;
+        default:
+          if ( o === null ) {
+            return "null";
+          }
+          else if ( o === undef ) {
+            return "undefined";
+          }
+          else {
+            return "<Type: " + axType + ">";
+          }
+          break;
+      }
+    },
+
+    Number : function( axType, o ) {
+      switch( axType ) {
+        case "Number":
+          return o;
+          break;
+        case "String":
+          var n = parseFloat( o );
+          // There's no isNaN().
+          if ( n.toString() === "NaN" ) {
+            return o.length;
+          }
+
+          return n;
+          break;
+        case "Vector":
+        case "Drawable":
+          return o.length;
+          break;
+        case "Hash":
+          var length = 0;
+          foreach( o, function( k, v ) {
+            length ++;
+          });
+
+          return length;
+          break;
+        case "Color":
+          return Color.toHardware( o );
+          break;
+        default:
+          return 0;
+          break;
+      }
+    },
+    
+    Vector : function( axType, o ) {
+      switch( axType ) {
+        case "Number":
+          return [ o ];
+          break;
+        case "String":
+          var v = [];
+          var i = 0;
+          for ( i = 0; i < o.length; i ++ ) {
+            v[ i + 0 ] = o.charCodeAt( i );
+          }
+
+          return v;
+          break;
+        case "Vector":
+        case "Matrix":
+        case "Drawable":
+          return o;
+          break;
+        case "Color":
+          return o.slice( 1 );
+          break;
+        case "Hash":
+          var vec = [];
+          foreach( o, function( k, v ) {
+            vec.push( [ k, v ] );
+          });
+
+          return vec;
+          break;
+        default:
+          return [ o ];
+          break;
+      }
+    }
+  };
+
+  return function( type, value ) {
+    if ( casts.hasOwnProperty( type ) ) {
+      var axType = axTypeOf( value );
+      value = axUnpack( value );
+      return axAs( type, casts[ type ]( axType, value ) );
+    }
+    else {
+      Debug.throw( "@ Utilities.biliScript, cast: Undefined cast target: " + type );
+    }
+  };
+}();
+
+// Export
+
+extend( AkariX, {
+  Debug : Debug,
+  extend : extend,
+  cast : cast
+});
