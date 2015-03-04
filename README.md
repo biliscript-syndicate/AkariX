@@ -3,7 +3,7 @@ AkariX
 
 *As of 2015/3/4, development of this library is on halt indefinitely.* The code was written during mid Oct. ~ Nov. 2013 in private, and then put aside for apparent performance and usability problems. It is made public solely for sake of history (and in case that someone, though very unlikely, might find it somehow useful). It's not polished and performant enough for use in works facing the public.
 
-All that follows are out of date. Refer to my blog post for further details.
+All that follows are out of date. Read [my blog post on this](https://blog.a-kar.in/legacy-mode8-projects) (in Chinese) for more information.
 
 > akari / noun.
 >
@@ -17,7 +17,7 @@ As the 'X' implies, AkariX is designed to provide an interface that is implement
 Status
 ------
 
-*As of 2015/3/4, development of this library is on halt indefinitely.* All that follows are out of date. Refer to my blog post for further details.
+*As of 2015/3/4, development of this library is on halt indefinitely.* All that follows are out of date.
 
 * Specifications `\specs`
 
